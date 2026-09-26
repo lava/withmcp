@@ -18,7 +18,8 @@ Usage:
 
 Options:
   -p, --profile <name>    profile to use (default: $WITHMCP_PROFILE, else `default`)
-  -e, --enable <server>   enable a server for this run (shorthand: +<server>)
+  -e, --enable <server>   enable a server for this run (shorthand: +<server>);
+                          <profile>/<server> pulls one in from another profile
   -d, --disable <server>  disable a server for this run
   -i, --interactive       pick servers before launching
       --config <file>     use this profile file instead of a named profile;
@@ -263,7 +264,7 @@ mod tests {
 
     #[test]
     fn options_before_harness() {
-        let (opts, cmd) = run(&["-p", "work", "+gh", "-d", "slack", "--enable=pw", "codex", "exec"]).unwrap();
+        let (opts, cmd) = run(&["-p", "work", "+gh", "-d", "slack", "--enable=pw", "+home/x", "codex", "exec"]).unwrap();
         assert_eq!(opts.profile.as_deref(), Some("work"));
         assert_eq!(
             opts.overrides,
@@ -271,6 +272,7 @@ mod tests {
                 Override::Enable("gh".into()),
                 Override::Disable("slack".into()),
                 Override::Enable("pw".into()),
+                Override::Enable("home/x".into()),
             ]
         );
         assert_eq!(cmd, Command::Launch(argv(&["codex", "exec"])));

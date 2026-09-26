@@ -14,7 +14,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 
 use crate::adapters::Harness;
-use crate::cli::{Command, Options, Scope};
+use crate::cli::{Command, Options, Override, Scope};
 use crate::config::{Profile, Server};
 use crate::native::{Locations, Scan};
 use crate::resolve::Resolution;
@@ -115,7 +115,28 @@ struct Plan {
     home: Option<PathBuf>,
     cwd: PathBuf,
     resolution: Resolution,
+    borrowed: Vec<Borrowed>,
     target: Option<Target>,
+}
+
+/// A server pulled in from another profile with `+<profile>/<server>`. It
+/// keeps that profile's prefix, so it shares logins with launches of it.
+struct Borrowed {
+    label: String,
+    exposed: String,
+    server: Server,
+}
+
+impl Plan {
+    /// Enabled servers by exposed name.
+    fn enabled(&self) -> Vec<(String, &Server)> {
+        let local = self.resolution.enabled().map(|name| {
+            let exposed = self.resolution.exposed_name(name);
+            (exposed, &self.profile.servers[name].server)
+        });
+        let borrowed = self.borrowed.iter().map(|b| (b.exposed.clone(), &b.server));
+        local.chain(borrowed).collect()
+    }
 }
 
 struct Target {
@@ -148,13 +169,33 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         ),
     };
     let cwd = current_dir()?;
+    let mut overrides = Vec::new();
+    let mut requests = Vec::new();
+    for o in &opts.overrides {
+        match o {
+            Override::Enable(spec) => match spec.split_once('/') {
+                Some((other, server))
+                    if other == selection.name && selection.origin != Origin::ConfigFlag =>
+                {
+                    overrides.push(Override::Enable(server.into()));
+                }
+                Some((other, server)) => requests.push((spec, other, server)),
+                None => overrides.push(o.clone()),
+            },
+            Override::Disable(spec) if spec.contains('/') => {
+                bail!("`-d {spec}`: servers of other profiles can only be enabled")
+            }
+            Override::Disable(_) => overrides.push(o.clone()),
+        }
+    }
     let resolution = resolve::resolve(
         &selection.name,
         &profile,
         &cwd,
         home.as_deref(),
-        &opts.overrides,
+        &overrides,
     )?;
+    let borrowed = borrow(&requests, &resolution, &selection, home.as_deref())?;
     let target = match argv {
         None => None,
         Some(argv) => {
@@ -163,12 +204,16 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             let scan = harness.scan(&Locations::from_env(home, cwd.clone()));
             let mut collisions = Vec::new();
             let mut servers = BTreeMap::new();
-            for name in resolution.enabled() {
+            let enabled = resolution.enabled().map(|name| {
                 let exposed = resolution.exposed_name(name);
+                (exposed, &profile.servers[name].server)
+            });
+            let enabled = enabled.chain(borrowed.iter().map(|b| (b.exposed.clone(), &b.server)));
+            for (exposed, server) in enabled {
                 match scan.servers.get(&exposed) {
                     Some(path) => collisions.push((exposed, path.clone())),
                     None => {
-                        servers.insert(exposed, profile.servers[name].server.clone());
+                        servers.insert(exposed, server.clone());
                     }
                 }
             }
@@ -188,8 +233,58 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         home,
         cwd,
         resolution,
+        borrowed,
         target,
     })
+}
+
+/// Loads the servers requested as `+<profile>/<server>`.
+fn borrow(
+    requests: &[(&String, &str, &str)],
+    resolution: &Resolution,
+    selection: &Selection,
+    home: Option<&Path>,
+) -> Result<Vec<Borrowed>> {
+    let config_dir = config::config_dir()?;
+    let mut profiles = BTreeMap::new();
+    let mut borrowed: Vec<Borrowed> = Vec::new();
+    for &(spec, other, server) in requests {
+        if !profiles.contains_key(other) {
+            let path = config::profile_path(&config_dir, other).with_context(|| format!("`+{spec}`"))?;
+            let Some(profile) = Profile::load(&path)? else {
+                bail!(
+                    "`+{spec}`: profile `{other}` not found: {} does not exist",
+                    display(&path, home)
+                );
+            };
+            profiles.insert(other.to_string(), profile);
+        }
+        let profile = &profiles[other];
+        let entry = profile
+            .servers
+            .get(server)
+            .with_context(|| format!("`+{spec}`: profile `{other}` has no server `{server}`"))?;
+        let exposed = format!("{}{server}", resolve::prefix(other, profile)?);
+        if let Some(name) = resolution
+            .decisions
+            .keys()
+            .find(|name| resolution.exposed_name(name) == exposed)
+        {
+            bail!(
+                "`+{spec}` would be passed as `{exposed}`, like server `{name}` of profile `{}`",
+                selection.name
+            );
+        }
+        if borrowed.iter().any(|b| b.exposed == exposed) {
+            continue;
+        }
+        borrowed.push(Borrowed {
+            label: spec.clone(),
+            exposed,
+            server: entry.server.clone(),
+        });
+    }
+    Ok(borrowed)
 }
 
 /// Reads the selected profile file, which must exist.
@@ -363,10 +458,10 @@ fn exec(mut command: std::process::Command) -> Result<ExitCode> {
 fn render_list(plan: &Plan) -> String {
     let mut out = String::new();
     let rows: Vec<_> = plan
-        .resolution
         .enabled()
-        .map(|name| {
-            let summary = match &plan.profile.servers[name].server {
+        .into_iter()
+        .map(|(exposed, server)| {
+            let summary = match server {
                 Server::Stdio { command, args, .. } => std::iter::once(command)
                     .chain(args)
                     .map(|w| shell_quote(w))
@@ -374,7 +469,7 @@ fn render_list(plan: &Plan) -> String {
                     .join(" "),
                 Server::Http { url, .. } => url.clone(),
             };
-            (plan.resolution.exposed_name(name), summary)
+            (exposed, summary)
         })
         .collect();
     let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
@@ -403,16 +498,20 @@ fn render_plan(plan: &Plan) -> String {
         .resolution
         .decisions
         .iter()
-        .map(|(name, decision)| (name, plan.resolution.exposed_name(name), decision))
+        .map(|(name, decision)| {
+            let state = if decision.enabled { "on " } else { "off" };
+            (name.clone(), plan.resolution.exposed_name(name), state, decision.source.to_string())
+        })
+        .chain(
+            plan.borrowed
+                .iter()
+                .map(|b| (b.label.clone(), b.exposed.clone(), "on ", "command line".to_string())),
+        )
         .collect();
     let width = rows.iter().map(|(name, ..)| name.len()).max().unwrap_or(0);
-    let exposed_width = rows.iter().map(|(_, e, _)| e.len()).max().unwrap_or(0);
-    for (name, exposed, decision) in &rows {
-        let state = if decision.enabled { "on " } else { "off" };
-        outln!(out, 
-            "  {state}  {name:width$}  as {exposed:exposed_width$}  {}",
-            decision.source
-        );
+    let exposed_width = rows.iter().map(|(_, e, ..)| e.len()).max().unwrap_or(0);
+    for (name, exposed, state, source) in &rows {
+        outln!(out, "  {state}  {name:width$}  as {exposed:exposed_width$}  {source}");
     }
     let Some(target) = &plan.target else {
         return out;
