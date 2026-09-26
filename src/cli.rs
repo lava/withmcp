@@ -14,7 +14,6 @@ Usage:
   withmcp [options] disable [--scope global|project] <server>...
   withmcp [options] clientsecret <server>
   withmcp [options] edit
-  withmcp [options] pick
 
 Options:
   -p, --profile <name>    profile to use (default: $WITHMCP_PROFILE, else `default`)
@@ -23,7 +22,6 @@ Options:
                           pulls one in from another profile
   -<server>, --disable <server>
                           disable a server for this run
-  -i, --interactive       pick servers before launching
       --config <file>     use this profile file instead of a named profile;
                           the default prefix is derived from its file name
   -h, --help              show this help
@@ -56,7 +54,6 @@ pub struct Options {
     pub profile: Option<String>,
     pub config: Option<PathBuf>,
     pub overrides: Vec<Override>,
-    pub interactive: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,7 +76,6 @@ pub enum Command {
         scope: Scope,
     },
     Edit,
-    Pick,
     Help,
     Version,
 }
@@ -110,7 +106,6 @@ enum Subcommand {
     Disable,
     ClientSecret,
     Edit,
-    Pick,
 }
 
 /// Parses the arguments after the program name.
@@ -151,7 +146,6 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
         match s {
             "-h" | "--help" => return Ok((opts, Command::Help)),
             "-V" | "--version" => return Ok((opts, Command::Version)),
-            "-i" | "--interactive" => opts.interactive = true,
             "-p" | "--profile" => opts.profile = Some(value(s)?),
             "--enable" => opts.overrides.push(Override::Enable(value(s)?)),
             "--disable" => opts.overrides.push(Override::Disable(value(s)?)),
@@ -176,8 +170,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     && !v.is_empty()
                     && !v.starts_with('-')
                 {
-                    const LONG: [&str; 8] =
-                        ["help", "version", "interactive", "profile", "enable", "disable", "config", "scope"];
+                    const LONG: [&str; 7] =
+                        ["help", "version", "profile", "enable", "disable", "config", "scope"];
                     let name = v.split('=').next().unwrap_or(v);
                     if LONG.contains(&name) {
                         bail!("unknown option `{s}`; did you mean `-{s}`?");
@@ -226,14 +220,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                 scope: scope.unwrap_or(Scope::Global),
             }
         }
-        Some(sub @ (Subcommand::List | Subcommand::Edit | Subcommand::Pick)) => {
+        Some(sub @ (Subcommand::List | Subcommand::Edit)) => {
             if let Some(extra) = harness.first() {
                 bail!("unexpected argument `{}`", extra.to_string_lossy());
             }
-            match sub {
-                Subcommand::List => Command::List,
-                Subcommand::Edit => Command::Edit,
-                _ => Command::Pick,
+            if sub == Subcommand::List {
+                Command::List
+            } else {
+                Command::Edit
             }
         }
     };
@@ -248,7 +242,6 @@ fn subcommand(s: &str) -> Option<Subcommand> {
         "disable" => Some(Subcommand::Disable),
         "clientsecret" => Some(Subcommand::ClientSecret),
         "edit" => Some(Subcommand::Edit),
-        "pick" => Some(Subcommand::Pick),
         _ => None,
     }
 }

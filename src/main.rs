@@ -48,7 +48,6 @@ fn run() -> Result<ExitCode> {
         Command::Help => emit(cli::USAGE)?,
         Command::Version => emit(&format!("withmcp {}\n", env!("CARGO_PKG_VERSION")))?,
         Command::Edit => return edit(&Selection::new(&opts)?.path),
-        Command::Pick => bail!("the picker is not implemented yet"),
         Command::Which(argv) => emit(&render_plan(&plan(&opts, argv)?))?,
         Command::List => emit(&render_list(&plan(&opts, None)?, use_color()))?,
         Command::Toggle {
@@ -57,12 +56,7 @@ fn run() -> Result<ExitCode> {
             scope,
         } => toggle(&opts, enable, &servers, scope)?,
         Command::ClientSecret(server) => client_secret(&opts, &server)?,
-        Command::Launch(argv) => {
-            if opts.interactive {
-                bail!("the picker is not implemented yet");
-            }
-            return launch(plan(&opts, Some(argv))?);
-        }
+        Command::Launch(argv) => return launch(plan(&opts, Some(argv))?),
     }
     Ok(ExitCode::SUCCESS)
 }
