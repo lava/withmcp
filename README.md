@@ -1,6 +1,46 @@
 # withmcp
 
-Launch a coding-agent harness with a configurable set of extra MCP servers.
+withmcp launches Claude Code, Codex or Pi with a set of MCP servers that you
+define once, in one place, and switch per project or per session.
+
+**One set of servers across all harnesses.** You configure Linear, GitHub
+and Playwright in one profile, and `withmcp claude`, `withmcp codex` and
+`withmcp pi` each get the same servers, translated to that harness's
+format. You no longer keep three MCP configs in sync.
+
+**Only the servers a task needs.** Every enabled MCP server takes up
+context and adds tools the agent can pick the wrong one from. With withmcp,
+servers are off unless enabled: turn on browser tooling for your frontend
+repo with a path rule, pull in Slack for a single session with `+slack`,
+or keep a separate `work` profile whose servers log in with your work
+accounts.
+
+## Quick start
+
+```sh
+cargo install --git https://github.com/lava/withmcp
+withmcp edit                 # create ~/.config/withmcp/profiles/default.toml
+withmcp list                 # show which servers are on in this directory
+withmcp claude               # launch Claude Code with them
+```
+
+A minimal profile:
+
+```toml
+[servers.linear]
+url = "https://mcp.linear.app/mcp"
+enabled = true
+
+[servers.playwright]
+command = "npx"
+args = ["@playwright/mcp@latest"]
+
+# Browser tooling only in the frontend repo.
+[paths."~/code/frontend"]
+enable = ["playwright"]
+```
+
+## Usage
 
 ```sh
 withmcp claude --resume                  # servers from the `default` profile
@@ -56,7 +96,7 @@ Servers and groups are off unless they have `enabled = true`. Later steps win:
    specific first. Within a rule, groups are applied before servers, so
    `enable = ["devtools"]` with `disable = ["chrome"]` leaves `chrome` off.
 3. `+<name>`/`--enable <name>` and `-<name>`/`--disable <name>` on the command
-   line, in order. Use `--disable` for servers named `p`, `i`, `h` or `V`,
+   line, in order. Use `--disable` for servers named `p`, `h` or `V`,
    whose `-<name>` form is an option.
 
 `+<profile>/<name>` (or `--enable <profile>/<name>`) additionally enables a
@@ -115,4 +155,8 @@ cargo build --release --target x86_64-unknown-linux-musl
   for collisions.
 - `list` does not check for collisions with a harness's own servers; use
   `which <harness>` for that.
-- `pick` and `-i` are not implemented yet.
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
+[MIT license](LICENSE-MIT) at your option.

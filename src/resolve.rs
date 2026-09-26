@@ -222,9 +222,9 @@ mod tests {
             servers = ["linear", "pinned"]
             enabled = true
 
-            [paths."~/code/tenzir"]
+            [paths."~/code/acme"]
             disable = ["linear"]
-            [paths."~/code/tenzir/docs"]
+            [paths."~/code/acme/docs"]
             enable = ["linear", "devtools"]
             disable = ["chrome"]
             "#,
@@ -254,20 +254,20 @@ mod tests {
 
     #[test]
     fn deeper_paths_win_and_servers_beat_groups_in_a_rule() {
-        let r = run("~/code/tenzir", &[]).unwrap();
-        assert_eq!(state(&r, "linear"), (false, "path `~/code/tenzir`".into()));
-        let r = run("~/code/tenzir/docs/src", &[]).unwrap();
-        assert_eq!(state(&r, "linear"), (true, "path `~/code/tenzir/docs`".into()));
+        let r = run("~/code/acme", &[]).unwrap();
+        assert_eq!(state(&r, "linear"), (false, "path `~/code/acme`".into()));
+        let r = run("~/code/acme/docs/src", &[]).unwrap();
+        assert_eq!(state(&r, "linear"), (true, "path `~/code/acme/docs`".into()));
         assert_eq!(
             state(&r, "playwright"),
-            (true, "path `~/code/tenzir/docs` via group `devtools`".into())
+            (true, "path `~/code/acme/docs` via group `devtools`".into())
         );
-        assert_eq!(state(&r, "chrome"), (false, "path `~/code/tenzir/docs`".into()));
+        assert_eq!(state(&r, "chrome"), (false, "path `~/code/acme/docs`".into()));
     }
 
     #[test]
     fn paths_match_whole_components() {
-        let r = run("~/code/tenzir-other", &[]).unwrap();
+        let r = run("~/code/acme-other", &[]).unwrap();
         assert!(state(&r, "linear").0);
     }
 
