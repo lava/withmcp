@@ -14,11 +14,22 @@ use anyhow::{Context, Result, bail};
 
 use crate::adapters::Harness;
 use crate::cli::{Command, Options};
-use crate::config::{Config, Server};
+use crate::config::{Profile, Server};
 use crate::native::{Locations, Scan};
 use crate::resolve::Resolution;
 
-const TEMPLATE: &str = include_str!("../examples/config.toml");
+/// Appends a line to a `String`.
+macro_rules! outln {
+    ($out:expr) => {
+        $out.push('\n')
+    };
+    ($out:expr, $($arg:tt)*) => {{
+        $out.push_str(&format!($($arg)*));
+        $out.push('\n');
+    }};
+}
+
+const TEMPLATE: &str = include_str!("../examples/profile.toml");
 
 fn main() -> ExitCode {
     match run() {
@@ -33,11 +44,12 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let (opts, command) = cli::parse(std::env::args_os().skip(1))?;
     match command {
-        Command::Help => print!("{}", cli::USAGE),
-        Command::Version => println!("withmcp {}", env!("CARGO_PKG_VERSION")),
-        Command::Edit => return edit(&config_path(&opts)?),
+        Command::Help => emit(cli::USAGE)?,
+        Command::Version => emit(&format!("withmcp {}\n", env!("CARGO_PKG_VERSION")))?,
+        Command::Edit => return edit(&Selection::new(&opts)?.path),
         Command::Pick => bail!("the picker is not implemented yet"),
-        Command::Which(argv) => print_plan(&plan(&opts, argv)?),
+        Command::Which(argv) => emit(&render_plan(&plan(&opts, argv)?))?,
+        Command::List => emit(&render_list(&plan(&opts, None)?))?,
         Command::Launch(argv) => {
             if opts.interactive {
                 bail!("the picker is not implemented yet");
@@ -48,11 +60,53 @@ fn run() -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
+/// The profile chosen by `--config`, `-p`, `$WITHMCP_PROFILE` or the default.
+struct Selection {
+    name: String,
+    path: PathBuf,
+    origin: Origin,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Origin {
+    Default,
+    Flag,
+    Env,
+    ConfigFlag,
+}
+
+impl Selection {
+    fn new(opts: &Options) -> Result<Self> {
+        if let Some(path) = &opts.config {
+            if opts.profile.is_some() {
+                bail!("`--config` and `--profile` cannot be used together");
+            }
+            let name = path
+                .file_stem()
+                .with_context(|| format!("`{}` is not a file name", path.display()))?;
+            return Ok(Self {
+                name: name.to_string_lossy().into_owned(),
+                path: path.clone(),
+                origin: Origin::ConfigFlag,
+            });
+        }
+        let env = std::env::var("WITHMCP_PROFILE").ok().filter(|p| !p.is_empty());
+        let (name, origin) = match (&opts.profile, env) {
+            (Some(name), _) => (name.clone(), Origin::Flag),
+            (None, Some(name)) => (name, Origin::Env),
+            (None, None) => (resolve::DEFAULT_PROFILE.into(), Origin::Default),
+        };
+        let path = config::profile_path(&config::config_dir()?, &name)?;
+        Ok(Self { name, path, origin })
+    }
+}
+
 struct Plan {
-    config_path: PathBuf,
+    selection: Selection,
+    profile: Profile,
+    profile_exists: bool,
     home: Option<PathBuf>,
     cwd: PathBuf,
-    profile_from_env: bool,
     resolution: Resolution,
     target: Option<Target>,
 }
@@ -61,32 +115,37 @@ struct Target {
     harness: Harness,
     argv: Vec<OsString>,
     scan: Scan,
-    /// Enabled servers the harness already defines, with the defining file.
+    /// Enabled servers the harness already defines, by exposed name, with
+    /// the defining file.
     collisions: Vec<(String, PathBuf)>,
-    /// Enabled servers to add, before `${VAR}` expansion.
+    /// Enabled servers to add by exposed name, before `${VAR}` expansion.
     servers: BTreeMap<String, Server>,
 }
 
-fn config_path(opts: &Options) -> Result<PathBuf> {
-    match &opts.config {
-        Some(path) => Ok(path.clone()),
-        None => config::default_path(),
-    }
-}
-
 fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
-    let config_path = config_path(opts)?;
-    let config = Config::load(&config_path)?;
+    let selection = Selection::new(opts)?;
     let home = config::home_dir().ok();
+    let loaded = Profile::load(&selection.path)?;
+    let profile_exists = loaded.is_some();
+    let profile = match loaded {
+        Some(profile) => profile,
+        None if selection.origin == Origin::Default => Profile::default(),
+        None if selection.origin == Origin::ConfigFlag => bail!(
+            "{} does not exist (create it with `withmcp --config <file> edit`)",
+            display(&selection.path, home.as_deref()),
+        ),
+        None => bail!(
+            "profile `{name}` not found: {} does not exist (create it with `withmcp -p {name} edit`)",
+            display(&selection.path, home.as_deref()),
+            name = selection.name,
+        ),
+    };
     let cwd = std::env::current_dir()
         .and_then(|d| d.canonicalize())
         .context("cannot determine the current directory")?;
-    let env_profile = std::env::var("WITHMCP_PROFILE").ok().filter(|p| !p.is_empty());
-    let profile_from_env = opts.profile.is_none() && env_profile.is_some();
-    let profile = opts.profile.clone().or(env_profile);
     let resolution = resolve::resolve(
-        &config,
-        profile.as_deref(),
+        &selection.name,
+        &profile,
         &cwd,
         home.as_deref(),
         &opts.overrides,
@@ -100,10 +159,11 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             let mut collisions = Vec::new();
             let mut servers = BTreeMap::new();
             for name in resolution.enabled() {
-                match scan.servers.get(name) {
-                    Some(path) => collisions.push((name.to_string(), path.clone())),
+                let exposed = resolution.exposed_name(name);
+                match scan.servers.get(&exposed) {
+                    Some(path) => collisions.push((exposed, path.clone())),
                     None => {
-                        servers.insert(name.to_string(), config.servers[name].clone());
+                        servers.insert(exposed, profile.servers[name].server.clone());
                     }
                 }
             }
@@ -117,10 +177,11 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         }
     };
     Ok(Plan {
-        config_path,
+        selection,
+        profile,
+        profile_exists,
         home,
         cwd,
-        profile_from_env,
         resolution,
         target,
     })
@@ -170,38 +231,80 @@ fn exec(mut command: std::process::Command) -> Result<ExitCode> {
     Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
 }
 
-fn print_plan(plan: &Plan) {
+fn render_list(plan: &Plan) -> String {
+    let mut out = String::new();
+    let rows: Vec<_> = plan
+        .resolution
+        .enabled()
+        .map(|name| {
+            let summary = match &plan.profile.servers[name].server {
+                Server::Stdio { command, args, .. } => std::iter::once(command)
+                    .chain(args)
+                    .map(|w| shell_quote(w))
+                    .collect::<Vec<_>>()
+                    .join(" "),
+                Server::Http { url, .. } => url.clone(),
+            };
+            (plan.resolution.exposed_name(name), summary)
+        })
+        .collect();
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    for (name, summary) in rows {
+        outln!(out, "{name:width$}  {summary}");
+    }
+    out
+}
+
+fn render_plan(plan: &Plan) -> String {
+    let mut out = String::new();
     let home = plan.home.as_deref();
-    let via_env = if plan.profile_from_env { " (from $WITHMCP_PROFILE)" } else { "" };
-    println!("config:  {}", display(&plan.config_path, home));
-    println!("profile: {}{via_env}", plan.resolution.profile);
-    println!("cwd:     {}", display(&plan.cwd, home));
-    println!();
-    let width = plan.resolution.decisions.keys().map(String::len).max().unwrap_or(0);
-    for (name, decision) in &plan.resolution.decisions {
+    let selection = &plan.selection;
+    let via = match selection.origin {
+        Origin::Env => " (from $WITHMCP_PROFILE)",
+        Origin::ConfigFlag => " (from --config)",
+        Origin::Default | Origin::Flag => "",
+    };
+    let missing = if plan.profile_exists { "" } else { " (does not exist)" };
+    outln!(out, "profile: {}{via}", selection.name);
+    outln!(out, "file:    {}{missing}", display(&selection.path, home));
+    outln!(out, "prefix:  {:?}", plan.resolution.prefix);
+    outln!(out, "cwd:     {}", display(&plan.cwd, home));
+    outln!(out);
+    let rows: Vec<_> = plan
+        .resolution
+        .decisions
+        .iter()
+        .map(|(name, decision)| (name, plan.resolution.exposed_name(name), decision))
+        .collect();
+    let width = rows.iter().map(|(name, ..)| name.len()).max().unwrap_or(0);
+    let exposed_width = rows.iter().map(|(_, e, _)| e.len()).max().unwrap_or(0);
+    for (name, exposed, decision) in &rows {
         let state = if decision.enabled { "on " } else { "off" };
-        println!("  {state}  {name:width$}  {}", decision.source);
+        outln!(out, 
+            "  {state}  {name:width$}  as {exposed:exposed_width$}  {}",
+            decision.source
+        );
     }
     let Some(target) = &plan.target else {
-        return;
+        return out;
     };
-    println!();
-    println!("{} servers checked in:", target.harness.name());
+    outln!(out);
+    outln!(out, "{} servers checked in:", target.harness.name());
     if target.scan.checked.is_empty() {
-        println!("  (no config files found)");
+        outln!(out, "  (no config files found)");
     }
     for path in &target.scan.checked {
-        println!("  {}", display(path, home));
+        outln!(out, "  {}", display(path, home));
     }
     for warning in &target.scan.warnings {
-        println!("  warning: {warning}");
+        outln!(out, "  warning: {warning}");
     }
     for (name, path) in &target.collisions {
-        println!("  skipping `{name}`: already defined in {}", display(path, home));
+        outln!(out, "  skipping `{name}`: already defined in {}", display(path, home));
     }
     // Built from unexpanded servers so `${VAR}` values are not printed.
-    println!();
-    println!("command (before ${{VAR}} expansion):");
+    outln!(out);
+    outln!(out, "command (before ${{VAR}} expansion):");
     match target.harness.prepare(&target.servers, &adapters::runtime_dir()) {
         Ok(prepared) => {
             let words: Vec<_> = std::iter::once(&target.argv[0])
@@ -209,9 +312,20 @@ fn print_plan(plan: &Plan) {
                 .chain(&target.argv[1..])
                 .map(|w| shell_quote(&w.to_string_lossy()))
                 .collect();
-            println!("  {}", words.join(" "));
+            outln!(out, "  {}", words.join(" "));
         }
-        Err(err) => println!("  error: {err:#}"),
+        Err(err) => outln!(out, "  error: {err:#}"),
+    }
+    out
+}
+
+/// Writes to stdout; a closed pipe (e.g. `withmcp list | head`) is not an
+/// error.
+fn emit(text: &str) -> Result<()> {
+    use std::io::Write;
+    match std::io::stdout().lock().write_all(text.as_bytes()) {
+        Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+        result => result.context("writing to stdout"),
     }
 }
 
@@ -253,8 +367,8 @@ fn edit(path: &Path) -> Result<ExitCode> {
     if !status.success() {
         bail!("editor exited with {status}");
     }
-    if let Err(err) = Config::load(path) {
-        eprintln!("withmcp: the config is invalid: {err:#}");
+    if let Err(err) = Profile::load(path) {
+        eprintln!("withmcp: the profile is invalid: {err:#}");
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)

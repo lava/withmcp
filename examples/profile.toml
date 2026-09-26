@@ -1,0 +1,28 @@
+## withmcp profile. Uncomment and adapt the entries below.
+##
+## The file name is the profile name. Select a profile with -p/--profile or
+## $WITHMCP_PROFILE; `default.toml` is used when neither is set.
+##
+## Servers are passed to the harness as <prefix><name>, e.g. `work_linear`,
+## so the same server in two profiles gets separate logins. The prefix
+## defaults to "<profile>_"; set it to "" to pass the plain names.
+# prefix = ""
+
+## Servers are on unless they have `enabled = false`.
+# [servers.linear]
+# url = "https://mcp.linear.app/mcp"
+
+# [servers.playwright]
+# command = "npx"
+# args = ["@playwright/mcp@latest"]
+# enabled = false
+## Values may reference the launching shell's environment with ${VAR}.
+# env = { DEBUG = "${PLAYWRIGHT_DEBUG}" }
+
+## Path rules apply when the current directory is the path or below it.
+## More specific paths are applied last.
+# [paths."~/code/myproject"]
+# enable = ["playwright"]
+
+# [paths."~/code/myproject/docs"]
+# disable = ["linear"]

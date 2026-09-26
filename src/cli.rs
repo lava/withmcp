@@ -8,6 +8,7 @@ withmcp - launch a coding-agent harness with extra MCP servers
 
 Usage:
   withmcp [options] [--] <harness> [args...]
+  withmcp [options] list
   withmcp [options] which [[--] <harness> [args...]]
   withmcp [options] edit
   withmcp [options] pick
@@ -17,10 +18,16 @@ Options:
   -e, --enable <server>   enable a server for this run (shorthand: +<server>)
   -d, --disable <server>  disable a server for this run
   -i, --interactive       pick servers before launching
-      --config <path>     config file (default: $WITHMCP_CONFIG, else
-                          ~/.config/withmcp/config.toml)
+      --config <file>     use this profile file instead of a named profile;
+                          the default prefix is derived from its file name
   -h, --help              show this help
   -V, --version           show the version
+
+`list` prints the servers enabled in the current directory; `which` also
+shows why, and what a launch of <harness> would do.
+
+Profiles live in ~/.config/withmcp/profiles/<name>.toml (or under
+$WITHMCP_CONFIG_DIR); `edit` opens the selected one.
 
 Everything after <harness> is passed to the harness unchanged. Use `--` to
 launch a harness whose name clashes with a subcommand.
@@ -47,6 +54,7 @@ pub enum Command {
     /// The harness program followed by its arguments.
     Launch(Vec<OsString>),
     Which(Option<Vec<OsString>>),
+    List,
     Edit,
     Pick,
     Help,
@@ -56,6 +64,7 @@ pub enum Command {
 #[derive(Clone, Copy)]
 enum Subcommand {
     Which,
+    List,
     Edit,
     Pick,
 }
@@ -124,11 +133,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
         None if harness.is_empty() => bail!("missing harness (see `withmcp --help`)"),
         None => Command::Launch(harness),
         Some(Subcommand::Which) => Command::Which((!harness.is_empty()).then_some(harness)),
-        Some(sub @ (Subcommand::Edit | Subcommand::Pick)) => {
+        Some(sub @ (Subcommand::List | Subcommand::Edit | Subcommand::Pick)) => {
             if let Some(extra) = harness.first() {
                 bail!("unexpected argument `{}`", extra.to_string_lossy());
             }
             match sub {
+                Subcommand::List => Command::List,
                 Subcommand::Edit => Command::Edit,
                 _ => Command::Pick,
             }
@@ -140,6 +150,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
 fn subcommand(s: &str) -> Option<Subcommand> {
     match s {
         "which" => Some(Subcommand::Which),
+        "list" => Some(Subcommand::List),
         "edit" => Some(Subcommand::Edit),
         "pick" => Some(Subcommand::Pick),
         _ => None,
@@ -178,12 +189,16 @@ mod tests {
             ]
         );
         assert_eq!(cmd, Command::Launch(argv(&["codex", "exec"])));
+        let (opts, _) = run(&["--config", "/x/work.toml", "list"]).unwrap();
+        assert_eq!(opts.config, Some(PathBuf::from("/x/work.toml")));
     }
 
     #[test]
     fn double_dash_forces_harness() {
         assert_eq!(run(&["--", "edit"]).unwrap().1, Command::Launch(argv(&["edit"])));
         assert_eq!(run(&["edit"]).unwrap().1, Command::Edit);
+        assert_eq!(run(&["-p", "work", "list"]).unwrap().1, Command::List);
+        assert_eq!(run(&["--", "list"]).unwrap().1, Command::Launch(argv(&["list"])));
     }
 
     #[test]
@@ -201,6 +216,7 @@ mod tests {
         assert!(run(&["-p"]).is_err());
         assert!(run(&["-p", "work"]).is_err());
         assert!(run(&["edit", "extra"]).is_err());
+        assert!(run(&["list", "claude"]).is_err());
         assert_eq!(run(&[]).unwrap().1, Command::Help);
     }
 }

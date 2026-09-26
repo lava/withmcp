@@ -187,7 +187,7 @@ mod tests {
     use super::*;
 
     fn servers() -> BTreeMap<String, Server> {
-        crate::config::Config::parse(
+        crate::config::Profile::parse(
             r#"
             [servers.gh]
             url = "https://example.com/mcp"
@@ -200,6 +200,9 @@ mod tests {
         )
         .unwrap()
         .servers
+        .into_iter()
+        .map(|(name, entry)| (name, entry.server))
+        .collect()
     }
 
     #[test]

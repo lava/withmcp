@@ -4,17 +4,27 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
+/// A profile file, `<config dir>/profiles/<name>.toml`.
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct Config {
+pub struct Profile {
+    /// Prepended to server names before they are passed to the harness;
+    /// defaults to `<profile>_`.
+    pub prefix: Option<String>,
     #[serde(default)]
-    pub servers: BTreeMap<String, Server>,
+    pub servers: BTreeMap<String, Entry>,
     #[serde(default)]
-    pub profiles: BTreeMap<String, Profile>,
+    pub paths: BTreeMap<String, Rule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawServer")]
+pub struct Entry {
+    pub enabled: bool,
+    pub server: Server,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Server {
     Stdio {
         command: String,
@@ -30,6 +40,8 @@ pub enum Server {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServer {
+    #[serde(default = "default_true")]
+    enabled: bool,
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -40,46 +52,44 @@ struct RawServer {
     headers: BTreeMap<String, String>,
 }
 
-impl TryFrom<RawServer> for Server {
+fn default_true() -> bool {
+    true
+}
+
+impl TryFrom<RawServer> for Entry {
     type Error = String;
 
     fn try_from(raw: RawServer) -> Result<Self, String> {
-        match (raw.command, raw.url) {
+        let server = match (raw.command, raw.url) {
             (Some(command), None) => {
                 if !raw.headers.is_empty() {
                     return Err("`headers` is only valid for `url` servers".into());
                 }
-                Ok(Server::Stdio {
+                Server::Stdio {
                     command,
                     args: raw.args,
                     env: raw.env,
-                })
+                }
             }
             (None, Some(url)) => {
                 if !raw.args.is_empty() || !raw.env.is_empty() {
                     return Err("`args` and `env` are only valid for `command` servers".into());
                 }
-                Ok(Server::Http {
+                Server::Http {
                     url,
                     headers: raw.headers,
-                })
+                }
             }
-            (Some(_), Some(_)) => Err("a server needs either `command` or `url`, not both".into()),
-            (None, None) => Err("a server needs either `command` or `url`".into()),
-        }
+            (Some(_), Some(_)) => {
+                return Err("a server needs either `command` or `url`, not both".into());
+            }
+            (None, None) => return Err("a server needs either `command` or `url`".into()),
+        };
+        Ok(Entry {
+            enabled: raw.enabled,
+            server,
+        })
     }
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct Profile {
-    pub extends: Option<String>,
-    #[serde(default)]
-    pub enable: Vec<String>,
-    #[serde(default)]
-    pub disable: Vec<String>,
-    #[serde(default)]
-    pub paths: BTreeMap<String, Rule>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -91,30 +101,38 @@ pub struct Rule {
     pub disable: Vec<String>,
 }
 
-impl Config {
-    /// Loads the config at `path`; a missing file yields an empty config.
-    pub fn load(path: &Path) -> Result<Self> {
+impl Profile {
+    /// Loads the profile at `path`, or `None` if the file does not exist.
+    pub fn load(path: &Path) -> Result<Option<Self>> {
         let text = match std::fs::read_to_string(path) {
             Ok(text) => text,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Self::default()),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(err) => return Err(err).with_context(|| format!("reading {}", path.display())),
         };
-        Self::parse(&text).with_context(|| format!("in {}", path.display()))
+        Self::parse(&text)
+            .map(Some)
+            .with_context(|| format!("in {}", path.display()))
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let config: Self = toml::from_str(text)?;
-        config.validate()?;
-        Ok(config)
+        let profile: Self = toml::from_str(text)?;
+        profile.validate()?;
+        Ok(profile)
     }
 
     fn validate(&self) -> Result<()> {
-        for (name, server) in &self.servers {
+        if let Some(prefix) = &self.prefix
+            && !prefix.is_empty()
+            && !is_bare_key(prefix)
+        {
+            bail!("invalid prefix `{prefix}`: use only letters, digits, `-` and `_`");
+        }
+        for (name, entry) in &self.servers {
             // Codex addresses servers as `mcp_servers.<name>` in `-c` overrides.
             if !is_bare_key(name) {
                 bail!("invalid server name `{name}`: use only letters, digits, `-` and `_`");
             }
-            let keys = match server {
+            let keys = match &entry.server {
                 Server::Stdio { env, .. } => env.keys(),
                 Server::Http { headers, .. } => headers.keys(),
             };
@@ -124,58 +142,25 @@ impl Config {
                 }
             }
         }
-        for (name, profile) in &self.profiles {
-            if let Some(parent) = &profile.extends
-                && !self.profiles.contains_key(parent)
-            {
-                bail!("profile `{name}` extends unknown profile `{parent}`");
+        for (path, rule) in &self.paths {
+            let what = format!("path `{path}`");
+            if !(path == "~" || path.starts_with("~/") || Path::new(path).is_absolute()) {
+                bail!("{what}: paths must be absolute or start with `~/`");
             }
-            self.check_rule(&format!("profile `{name}`"), &profile.enable, &profile.disable)?;
-            for (path, rule) in &profile.paths {
-                let what = format!("profile `{name}`, path `{path}`");
-                if !(path == "~" || path.starts_with("~/") || Path::new(path).is_absolute()) {
-                    bail!("{what}: paths must be absolute or start with `~/`");
+            for server in rule.enable.iter().chain(&rule.disable) {
+                if !self.servers.contains_key(server) {
+                    bail!("{what}: unknown server `{server}`");
                 }
-                self.check_rule(&what, &rule.enable, &rule.disable)?;
             }
-            self.chain(name)?;
+            if let Some(server) = rule.enable.iter().find(|s| rule.disable.contains(s)) {
+                bail!("{what}: server `{server}` is both enabled and disabled");
+            }
         }
         Ok(())
-    }
-
-    fn check_rule(&self, what: &str, enable: &[String], disable: &[String]) -> Result<()> {
-        for server in enable.iter().chain(disable) {
-            if !self.servers.contains_key(server) {
-                bail!("{what}: unknown server `{server}`");
-            }
-        }
-        if let Some(server) = enable.iter().find(|s| disable.contains(s)) {
-            bail!("{what}: server `{server}` is both enabled and disabled");
-        }
-        Ok(())
-    }
-
-    /// Returns the `extends` chain of profile `name`, root profile first.
-    pub fn chain<'a>(&'a self, name: &'a str) -> Result<Vec<(&'a str, &'a Profile)>> {
-        let mut chain: Vec<(&str, &Profile)> = Vec::new();
-        let mut current = Some(name);
-        while let Some(name) = current {
-            if chain.iter().any(|(n, _)| *n == name) {
-                bail!("cycle in `extends` involving profile `{name}`");
-            }
-            let profile = self
-                .profiles
-                .get(name)
-                .with_context(|| format!("unknown profile `{name}`"))?;
-            chain.push((name, profile));
-            current = profile.extends.as_deref();
-        }
-        chain.reverse();
-        Ok(chain)
     }
 }
 
-fn is_bare_key(s: &str) -> bool {
+pub fn is_bare_key(s: &str) -> bool {
     !s.is_empty()
         && s
             .chars()
@@ -189,37 +174,45 @@ pub fn home_dir() -> Result<PathBuf> {
         .context("$HOME is not set")
 }
 
-/// `$WITHMCP_CONFIG`, else `$XDG_CONFIG_HOME/withmcp/config.toml`, else
-/// `~/.config/withmcp/config.toml`.
-pub fn default_path() -> Result<PathBuf> {
-    if let Some(path) = std::env::var_os("WITHMCP_CONFIG").filter(|p| !p.is_empty()) {
-        return Ok(path.into());
+/// `$WITHMCP_CONFIG_DIR`, else `$XDG_CONFIG_HOME/withmcp`, else
+/// `~/.config/withmcp`.
+pub fn config_dir() -> Result<PathBuf> {
+    if let Some(dir) = std::env::var_os("WITHMCP_CONFIG_DIR").filter(|d| !d.is_empty()) {
+        return Ok(dir.into());
     }
     let base = match std::env::var_os("XDG_CONFIG_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir),
         None => home_dir()?.join(".config"),
     };
-    Ok(base.join("withmcp").join("config.toml"))
+    Ok(base.join("withmcp"))
+}
+
+pub fn profile_path(config_dir: &Path, profile: &str) -> Result<PathBuf> {
+    // Also keeps names like `../x` from escaping the profiles directory.
+    if !is_bare_key(profile) {
+        bail!("invalid profile name `{profile}`: use only letters, digits, `-` and `_`");
+    }
+    Ok(config_dir.join("profiles").join(format!("{profile}.toml")))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    const EXAMPLE: &str = include_str!("../examples/profile.toml");
+
     fn error(text: &str) -> String {
-        format!("{:#}", Config::parse(text).unwrap_err())
-    }
-
-    const EXAMPLE: &str = include_str!("../examples/config.toml");
-
-    #[test]
-    fn example_config_is_empty() {
-        let config = Config::parse(EXAMPLE).unwrap();
-        assert!(config.servers.is_empty() && config.profiles.is_empty());
+        format!("{:#}", Profile::parse(text).unwrap_err())
     }
 
     #[test]
-    fn uncommented_example_config_is_valid() {
+    fn example_profile_is_empty() {
+        let profile = Profile::parse(EXAMPLE).unwrap();
+        assert!(profile.prefix.is_none() && profile.servers.is_empty() && profile.paths.is_empty());
+    }
+
+    #[test]
+    fn uncommented_example_profile_is_valid() {
         // `## ` marks prose, `# ` marks commented-out config.
         let uncommented: String = EXAMPLE
             .lines()
@@ -228,14 +221,16 @@ mod tests {
                 _ => format!("{line}\n"),
             })
             .collect();
-        let config = Config::parse(&uncommented).unwrap();
-        assert_eq!(config.servers.len(), 3);
-        assert_eq!(config.profiles["work"].extends.as_deref(), Some("default"));
+        let profile = Profile::parse(&uncommented).unwrap();
+        assert_eq!(profile.prefix.as_deref(), Some(""));
+        assert_eq!(profile.servers.len(), 2);
+        assert!(!profile.servers["playwright"].enabled);
+        assert_eq!(profile.paths.len(), 2);
     }
 
     #[test]
     fn server_kinds() {
-        let config = Config::parse(
+        let profile = Profile::parse(
             r#"
             [servers.a]
             command = "npx"
@@ -243,11 +238,14 @@ mod tests {
             env = { K = "v" }
             [servers.b]
             url = "https://example.com/mcp"
+            enabled = false
             "#,
         )
         .unwrap();
-        assert!(matches!(config.servers["a"], Server::Stdio { .. }));
-        assert!(matches!(config.servers["b"], Server::Http { .. }));
+        assert!(profile.servers["a"].enabled);
+        assert!(matches!(profile.servers["a"].server, Server::Stdio { .. }));
+        assert!(!profile.servers["b"].enabled);
+        assert!(matches!(profile.servers["b"].server, Server::Http { .. }));
     }
 
     #[test]
@@ -256,36 +254,26 @@ mod tests {
         assert!(error("[servers.a]\nargs = []").contains("either `command` or `url`"));
         assert!(error("[servers.a]\nurl = \"y\"\nenv = { K = \"v\" }").contains("only valid"));
         assert!(error("[servers.\"a.b\"]\ncommand = \"x\"").contains("invalid server name"));
+        assert!(error("prefix = \"a.\"").contains("invalid prefix"));
+        assert!(error("extends = \"x\"").contains("unknown field"));
     }
 
     #[test]
-    fn rejects_invalid_profiles() {
+    fn rejects_invalid_paths() {
         let servers = "[servers.a]\ncommand = \"x\"\n";
-        assert!(error(&format!("{servers}[profiles.p]\nenable = [\"b\"]")).contains("unknown server `b`"));
+        assert!(error(&format!("{servers}[paths.\"/p\"]\nenable = [\"b\"]")).contains("unknown server `b`"));
         assert!(
-            error(&format!("{servers}[profiles.p]\nenable = [\"a\"]\ndisable = [\"a\"]"))
+            error(&format!("{servers}[paths.\"/p\"]\nenable = [\"a\"]\ndisable = [\"a\"]"))
                 .contains("both enabled and disabled")
         );
-        assert!(error(&format!("{servers}[profiles.p]\nextends = \"q\"")).contains("unknown profile"));
-        assert!(
-            error(&format!(
-                "{servers}[profiles.p]\nextends = \"q\"\n[profiles.q]\nextends = \"p\""
-            ))
-            .contains("cycle")
-        );
-        assert!(
-            error(&format!("{servers}[profiles.p.paths.\"code\"]\nenable = [\"a\"]"))
-                .contains("must be absolute")
-        );
+        assert!(error(&format!("{servers}[paths.\"code\"]\nenable = [\"a\"]")).contains("must be absolute"));
     }
 
     #[test]
-    fn chain_is_root_first() {
-        let config = Config::parse(
-            "[profiles.a]\n[profiles.b]\nextends = \"a\"\n[profiles.c]\nextends = \"b\"",
-        )
-        .unwrap();
-        let names: Vec<_> = config.chain("c").unwrap().into_iter().map(|(n, _)| n).collect();
-        assert_eq!(names, ["a", "b", "c"]);
+    fn profile_paths() {
+        let dir = Path::new("/cfg");
+        assert_eq!(profile_path(dir, "work").unwrap(), Path::new("/cfg/profiles/work.toml"));
+        assert!(profile_path(dir, "../work").is_err());
+        assert!(profile_path(dir, "").is_err());
     }
 }
