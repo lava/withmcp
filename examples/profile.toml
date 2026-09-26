@@ -1,10 +1,5 @@
 ## withmcp profile. Uncomment and adapt the entries below.
 
-## Servers are passed to the harness as <prefix><name>, e.g. `work_linear`,
-## so the same server in two profiles gets separate logins. The prefix
-## defaults to "<profile>_"; set it to "" to pass the plain names.
-# prefix = ""
-
 ## Servers are off unless they, or a group containing them, have
 ## `enabled = true`.
 # [servers.linear]
@@ -27,8 +22,13 @@
 # args = ["-y", "chrome-devtools-mcp@latest"]
 
 ## Groups switch related servers together.
-# [groups.devtools]
+## Like servers, they are not enabled by default.
+# [groups.webdev]
 # servers = ["playwright", "chrome"]
+
+
+# [groups.communication]
+# servers = ["linear", "slack"]
 # enabled = true
 
 ## Advanced options

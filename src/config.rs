@@ -291,12 +291,14 @@ mod tests {
             })
             .collect();
         let profile = Profile::parse(&uncommented).unwrap();
-        assert_eq!(profile.prefix.as_deref(), Some(""));
+        assert!(profile.prefix.is_none());
         assert_eq!(profile.servers.len(), 5);
         assert!(profile.servers["linear"].enabled);
         assert!(!profile.servers["slack"].enabled);
-        assert!(profile.groups["devtools"].enabled);
-        assert_eq!(profile.groups["devtools"].servers, ["playwright", "chrome"]);
+        assert!(!profile.groups["webdev"].enabled);
+        assert_eq!(profile.groups["webdev"].servers, ["playwright", "chrome"]);
+        assert!(profile.groups["communication"].enabled);
+        assert_eq!(profile.groups["communication"].servers, ["linear", "slack"]);
     }
 
     #[test]
