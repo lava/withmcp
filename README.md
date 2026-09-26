@@ -41,26 +41,42 @@ Currently `claude`, `codex` and `pi` are supported.
 
 ## Usage
 
-Enable a server by default:
+Run a one-off session with a given server enabled:
 
 ```sh
-withmcp enable linear
+❯ withmcp
+Usage:
+  withmcp [options] [--] <harness> [args...]
+
+Configured Servers:
+  excalidraw  https://api.excalidraw.com/api/v1/mcp  (not enabled)
+  github      https://api.githubcopilot.com/mcp/  (not enabled)
+  linear      https://mcp.linear.app/mcp  (not enabled)
+  playwright  npx @playwright/mcp@latest  (not enabled)
+  slack       https://mcp.slack.com/mcp  (not enabled)
+
+
+❯ withmcp +linear claude
 ```
 
-The inverse of course also works:
+Permanently enable it:
+```sh
+❯ withmcp enable linear  # all withmcp sessions now have this
+```
+
+The inverse also works:
 
 ```sh
-withmcp -linear claude   # run without linear mcp
+❯ withmcp -linear claude   # run without linear mcp
 ```
 
-You can keep separate profiles:
+You can keep separate profiles that define their own set of servers:
 
 ```sh
 withmcp -p work codex
 ```
 
-that can define their own servers. You can pull in servers from other
-profiles:
+You can pull in servers from other profiles for a one-off run:
 
 ```sh
 withmcp +work/slack claude
@@ -68,14 +84,19 @@ withmcp +work/slack claude
 
 ## How it works
 
-`withmcp` works as a launcher that generates a list of MCP servers for the
-current directory by computing the union of all servers enabled for the
-current directory in the configuration file. It then passes that configuration
-in the required harness-specific format to the agent.
+`withmcp` is a thin launcher for the selected agent harness.
+It generates a list of MCP servers that should be enabled for the
+current directory by looking at its own config.
+It then passes that configuration in the required harness-specific
+format to the agent.
 
-It does not attempt to perform any communication with the MCP servers
-themselves, so you'll still have to authenticate manually inside your harness
-of choice.
+Note that it does not do anything after launching the requested harness,
+so there is no way to update the config at runtime. For that, you would
+need to use a MCP proxy server.
+
+It also does not attempt to perform any communication with the MCP servers
+themselves. In particular, authentication still happens completely inside
+your harness of choice, after launching.
 
 When it detects that a given MCP server is already configured natively for
 the selected harness, it will be left out of the generated config.
