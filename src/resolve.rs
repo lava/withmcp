@@ -69,8 +69,8 @@ impl Resolution {
 }
 
 /// Decides which servers of profile `name` are enabled. Later steps win:
-/// 1. Each server's `enabled` flag, else whether a group containing it is
-///    enabled.
+/// 1. A server is on if its own `enabled` flag or that of a group containing
+///    it is set.
 /// 2. Path rules matching `cwd`, least specific first; within a rule, groups
 ///    before servers.
 /// 3. Command-line overrides, in order.
@@ -86,15 +86,15 @@ pub fn resolve(
         .iter()
         .map(|(server, entry)| {
             let decision = match (entry.enabled, profile.enabling_group(server)) {
-                (Some(enabled), _) => Decision {
-                    enabled,
+                (true, _) => Decision {
+                    enabled: true,
                     source: Source::Flag,
                 },
-                (None, Some(group)) => Decision {
+                (false, Some(group)) => Decision {
                     enabled: true,
                     source: Source::Group(group.to_string()),
                 },
-                (None, None) => Decision {
+                (false, None) => Decision {
                     enabled: false,
                     source: Source::Unset,
                 },
@@ -247,9 +247,9 @@ mod tests {
         let r = run("/elsewhere", &[]).unwrap();
         assert_eq!(state(&r, "github"), (true, "`enabled` flag".into()));
         assert_eq!(state(&r, "linear"), (true, "group `always`".into()));
-        assert_eq!(state(&r, "pinned"), (false, "`enabled` flag".into()));
+        assert_eq!(state(&r, "pinned"), (true, "group `always`".into()), "groups win over `enabled = false`");
         assert_eq!(state(&r, "playwright"), (false, "off by default".into()));
-        assert_eq!(r.enabled().collect::<Vec<_>>(), ["github", "linear"]);
+        assert_eq!(r.enabled().collect::<Vec<_>>(), ["github", "linear", "pinned"]);
     }
 
     #[test]

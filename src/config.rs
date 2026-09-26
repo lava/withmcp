@@ -22,8 +22,8 @@ pub struct Profile {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawServer")]
 pub struct Entry {
-    /// `None` defers to the groups containing the server.
-    pub enabled: Option<bool>,
+    /// The server is also on when a group containing it is enabled.
+    pub enabled: bool,
     pub server: Server,
 }
 
@@ -68,7 +68,8 @@ pub struct OAuth {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServer {
-    enabled: Option<bool>,
+    #[serde(default)]
+    enabled: bool,
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -153,8 +154,7 @@ impl Profile {
         }
     }
 
-    /// The enabled group containing `server` that its state comes from, when
-    /// the server has no `enabled` flag of its own.
+    /// An enabled group containing `server`.
     pub fn enabling_group(&self, server: &str) -> Option<&str> {
         self.groups
             .iter()
@@ -164,10 +164,7 @@ impl Profile {
 
     /// Whether `server` is on before path rules and the command line apply.
     pub fn base_enabled(&self, server: &str) -> bool {
-        match self.servers[server].enabled {
-            Some(enabled) => enabled,
-            None => self.enabling_group(server).is_some(),
-        }
+        self.servers[server].enabled || self.enabling_group(server).is_some()
     }
 
     fn validate(&self) -> Result<()> {
@@ -296,8 +293,8 @@ mod tests {
         let profile = Profile::parse(&uncommented).unwrap();
         assert_eq!(profile.prefix.as_deref(), Some(""));
         assert_eq!(profile.servers.len(), 4);
-        assert_eq!(profile.servers["linear"].enabled, Some(true));
-        assert_eq!(profile.servers["slack"].enabled, None);
+        assert!(profile.servers["linear"].enabled);
+        assert!(!profile.servers["slack"].enabled);
         assert_eq!(profile.groups["devtools"].servers, ["playwright", "chrome"]);
         assert_eq!(profile.paths.len(), 2);
     }
@@ -317,9 +314,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(profile.servers["a"].enabled, None);
+        assert!(!profile.servers["a"].enabled);
         assert!(matches!(profile.servers["a"].server, Server::Stdio { .. }));
-        assert_eq!(profile.servers["b"].enabled, Some(false));
+        assert!(!profile.servers["b"].enabled);
         let Server::Http { oauth, .. } = &profile.servers["b"].server else {
             panic!("not an http server");
         };
@@ -378,7 +375,7 @@ mod tests {
         .unwrap();
         assert!(profile.base_enabled("a"));
         assert_eq!(profile.enabling_group("a"), Some("on"));
-        assert!(!profile.base_enabled("b"), "the server flag wins over the group");
+        assert!(profile.base_enabled("b"), "a group enables servers with `enabled = false`");
         assert!(!profile.base_enabled("c"));
         assert!(matches!(profile.target("off"), Some(Target::Group(g)) if g == ["c"]));
         assert!(matches!(profile.target("a"), Some(Target::Server)));

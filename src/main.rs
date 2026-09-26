@@ -388,6 +388,7 @@ fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Resul
             let state = if decision.enabled { "enabled" } else { "disabled" };
             let hint = match (&decision.source, scope) {
                 (resolve::Source::Path { .. }, Scope::Global) => "; use `--scope project` to override it here",
+                (resolve::Source::Group(_), _) => "; disable the group or use `--scope project`",
                 _ => "",
             };
             diagnose(

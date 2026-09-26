@@ -42,6 +42,8 @@ pub fn toggle(
             };
             if changed {
                 Outcome::Changed(format!("{verb} {what} globally"))
+            } else if !enable && profile.servers.contains_key(name) && profile.base_enabled(name) {
+                Outcome::Unchanged(format!("{what} has no `enabled` flag to clear"))
             } else {
                 Outcome::Unchanged(format!("{what} is already {verb} globally"))
             }
@@ -61,18 +63,18 @@ pub fn toggle(
     })
 }
 
-/// Makes `server` enabled or disabled before path rules apply. Its own flag
-/// is only written when its groups would not give the same result.
+/// Sets or clears the `enabled` flag of `server`. The flag is not written
+/// when an enabled group already turns the server on.
 fn set_server_flag(doc: &mut DocumentMut, profile: &Profile, server: &str, enabled: bool) -> Result<bool> {
-    if profile.base_enabled(server) == enabled {
+    let current = profile.servers[server].enabled;
+    if current == enabled || (enabled && profile.base_enabled(server)) {
         return Ok(false);
     }
-    let from_groups = profile.enabling_group(server).is_some();
     let table = table_mut(doc, "servers", server)?;
-    if enabled == from_groups {
-        table.remove("enabled");
+    if enabled {
+        table.insert("enabled", toml_edit::value(true));
     } else {
-        table.insert("enabled", toml_edit::value(enabled));
+        table.remove("enabled");
     }
     Ok(true)
 }
@@ -230,15 +232,15 @@ enable = ["playwright"]
     }
 
     #[test]
-    fn server_flag_only_written_when_groups_disagree() {
+    fn server_flag_not_written_when_a_group_enables_it() {
         let (text, _) = run(PROFILE, "devtools", true, Scope::Global, "/");
-        // chrome is now on via its group: disabling it needs an explicit flag...
-        let (text, outcome) = run(&text, "chrome", false, Scope::Global, "/");
-        assert_eq!(outcome, changed("disabled `chrome` globally"));
-        assert!(text.contains("[servers.chrome]\ncommand = \"npx\"\nenabled = false\n"));
-        // ...and enabling it again drops the flag.
-        let (text, _) = run(&text, "chrome", true, Scope::Global, "/");
-        assert!(text.contains("[servers.chrome]\ncommand = \"npx\"\n\n"));
+        let (after, outcome) = run(&text, "chrome", true, Scope::Global, "/");
+        assert!(matches!(outcome, Outcome::Unchanged(_)));
+        assert_eq!(after, text);
+        // A group cannot be overridden by the server's own flag.
+        let (after, outcome) = run(&text, "chrome", false, Scope::Global, "/");
+        assert_eq!(outcome, Outcome::Unchanged("`chrome` has no `enabled` flag to clear".into()));
+        assert_eq!(after, text);
     }
 
     #[test]

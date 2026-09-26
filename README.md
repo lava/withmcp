@@ -50,8 +50,8 @@ instead; group and server names must differ.
 
 Servers and groups are off unless they have `enabled = true`. Later steps win:
 
-1. Each server's `enabled` flag; without one, the server is on if a group
-   containing it is enabled.
+1. A server is on if it, or any group containing it, has `enabled = true`.
+   A server's own `enabled = false` does not override its groups.
 2. Path rules (`[paths."<dir>"]`) matching the current directory, least
    specific first. Within a rule, groups are applied before servers, so
    `enable = ["devtools"]` with `disable = ["chrome"]` leaves `chrome` off.
@@ -67,10 +67,10 @@ secret with launches of the `work` profile.
 
 `withmcp enable` and `withmcp disable` edit the selected profile file and
 keep its comments and formatting. `--scope global` (the default) changes the
-`enabled` flag of the group, or of the server where its groups would not
-give the requested result anyway; `--scope project` adds the name to the
-`enable` or `disable` list of the path rule for the current directory. If a path rule
-still overrides the result in the current directory, withmcp warns about it.
+`enabled` flag of the server or group; `--scope project` adds the name to the
+`enable` or `disable` list of the path rule for the current directory. If the
+server is still on or off afterwards, for example because an enabled group
+contains it or a path rule overrides it, withmcp warns about it.
 
 String values of servers may reference the environment with `${VAR}`, and
 include the output of a command with `$(command)`, for example `headers = {
