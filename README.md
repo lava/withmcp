@@ -1,144 +1,85 @@
 # withmcp
 
-withmcp launches Claude Code, Codex or Pi with a set of MCP servers that you
-define once, in one place, and switch per project or per session.
+withmcp is a tool for managing your system-wide collection of MCP servers,
+allowing easy toggling of individual servers or groups of them, globally or per
+project.
 
-**One set of servers across all harnesses.** You configure Linear, GitHub
-and Playwright in one profile, and `withmcp claude`, `withmcp codex` and
-`withmcp pi` each get the same servers, translated to that harness's
-format. You no longer keep three MCP configs in sync.
+Why would you want to do that? These were my motivating examples:
 
-**Only the servers a task needs.** Every enabled MCP server takes up
-context and adds tools the agent can pick the wrong one from. With withmcp,
-servers are off unless enabled: turn on browser tooling for your frontend
-repo with a path rule, pull in Slack for a single session with `+slack`,
-or keep a separate `work` profile whose servers log in with your work
-accounts.
+* Found a cool server that has very specific use cases so you don't want it
+  in the context by default? -> Save it in your config, enable when needed.
+
+* Want to switch between different toolsets for different tasks? -> Save them
+  in your config, enable toolsets when needed.
+
+* Want to enable an MCP server globally like voice mode when working
+  remotely? -> Save it in your config, enable when needed.
 
 ## Quick start
 
 ```sh
 cargo install --git https://github.com/lava/withmcp
 withmcp edit                 # create ~/.config/withmcp/profiles/default.toml
-withmcp list                 # show which servers are on in this directory
-withmcp claude               # launch Claude Code with them
 ```
 
-A minimal profile:
+Create a minimal profile:
 
 ```toml
 [servers.linear]
 url = "https://mcp.linear.app/mcp"
-enabled = true
+```
 
-[servers.playwright]
-command = "npx"
-args = ["@playwright/mcp@latest"]
+Run with that server enabled:
 
-# Browser tooling only in the frontend repo.
-[paths."~/code/frontend"]
-enable = ["playwright"]
+```sh
+withmcp +linear claude
 ```
 
 ## Usage
 
+Enable a server by default:
+
 ```sh
-withmcp claude --resume                  # servers from the `default` profile
-withmcp -p work +playwright -linear codex
-withmcp +devtools claude                 # a group of servers
-withmcp +work/slack claude               # one server from another profile
-WITHMCP_PROFILE=work withmcp claude
-withmcp list                             # servers in the current directory
-withmcp which claude                     # ...and why, plus what a launch would do
-withmcp -p work edit                     # open the profile in $VISUAL/$EDITOR
-withmcp enable devtools                  # set `enabled = true` on the group
-withmcp enable --scope project playwright  # enable in a path rule for this dir
-withmcp -- edit                          # launch a harness called `edit`
+withmcp enable linear
 ```
 
-withmcp only adds servers. Servers the harness defines itself stay untouched.
-If one of those has the same name as an enabled withmcp server, withmcp prints
-a warning and leaves its own server out.
+The inverse of course also works:
 
-Supported harnesses: `claude` (via `--mcp-config`), `codex` (via `-c
-mcp_servers.*` overrides) and `pi` (via `--mcp-config`). Pi needs the
-[pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) extension
-(`pi install npm:pi-mcp-adapter`); withmcp warns if it cannot find it. The
-adapter's `--mcp-config` replaces `~/.pi/agent/mcp.json` (or
-`$PI_CODING_AGENT_DIR/mcp.json`), so withmcp passes a copy of that file with
-its servers added.
+```sh
+withmcp -linear claude   # run without linear mcp
+```
 
-## Profiles
+You can keep separate profiles:
 
-Each profile is a file, `~/.config/withmcp/profiles/<name>.toml` (the
-directory is `$WITHMCP_CONFIG_DIR`, else `$XDG_CONFIG_HOME/withmcp`). The
-profile is `-p/--profile`, else `$WITHMCP_PROFILE`, else `default`. A missing
-`default.toml` counts as an empty profile; any other missing profile is an
-error. `--config <file>` uses a profile file from anywhere instead; its
-file name serves as the profile name. See [`examples/profile.toml`](examples/profile.toml); `withmcp edit`
-creates new profiles from it.
+```sh
+withmcp -p work codex
+```
 
-Servers are passed to the harness as `<prefix><name>`. The prefix defaults to
-`<profile>_`, so `linear` in `work.toml` becomes `work_linear` and gets its own
-login, separate from `linear` in other profiles. Set `prefix = ""` to pass the
-plain names. On the command line and in path rules, servers are referred to
-without the prefix.
+that can define their own servers. You can pull in servers from other
+profiles:
 
-Groups (`[groups.<name>]` with `servers = [...]`) switch related servers
-together. Wherever a server name is accepted, a group name can be used
-instead; group and server names must differ.
+```sh
+withmcp +work/slack claude
+```
 
-Servers and groups are off unless they have `enabled = true`. Later steps win:
+## How it works
 
-1. A server is on if it, or any group containing it, has `enabled = true`.
-   A server's own `enabled = false` does not override its groups.
-2. Path rules (`[paths."<dir>"]`) matching the current directory, least
-   specific first. Within a rule, groups are applied before servers, so
-   `enable = ["devtools"]` with `disable = ["chrome"]` leaves `chrome` off.
-3. `+<name>`/`--enable <name>` and `-<name>`/`--disable <name>` on the command
-   line, in order. Use `--disable` for servers named `p`, `h` or `V`,
-   whose `-<name>` form is an option.
+`withmcp` works as a launcher that generates a list of MCP servers for the
+current directory by computing the union of all servers enabled for the
+current directory in the configuration file. It then passes that configuration
+in the required harness-specific format to the agent.
 
-`+<profile>/<name>` (or `--enable <profile>/<name>`) additionally enables a
-server or group of another profile for this run, regardless of that
-profile's `enabled` flags and path rules. It keeps that profile's prefix, so
-`+work/slack` is passed as `work_slack` and shares its login and client
-secret with launches of the `work` profile.
+It does not attempt to perform any communication with the MCP servers
+themselves, so you'll still have to authenticate manually inside your harness
+of choice.
 
-`withmcp enable` and `withmcp disable` edit the selected profile file and
-keep its comments and formatting. `--scope global` (the default) changes the
-`enabled` flag of the server or group; `--scope project` adds the name to the
-`enable` or `disable` list of the path rule for the current directory. If the
-server is still on or off afterwards, for example because an enabled group
-contains it or a path rule overrides it, withmcp warns about it.
-
-String values of servers may reference the environment with `${VAR}`, and
-include the output of a command with `$(command)`, for example `headers = {
-Authorization = "Bearer $(gh auth token)" }`. withmcp runs the command itself,
-without a shell: its arguments are split on whitespace, and pipes, quotes and
-variables are not supported. The command must print exactly one line, which
-replaces the `$(...)`. Commands only run for servers that are enabled for the
-launch, and the values never enter the harness's environment, which makes
-`$(pass ...)` a way to keep secrets out of the profile.
-Authentication is left to the harness (e.g. `/mcp` in Claude Code, `/mcp-auth
-<server>` in Pi or `codex mcp login`). For servers without dynamic client
-registration, such as Slack's, `oauth = { client_id = "...", callback_port =
-3118 }` names a pre-registered OAuth client; Codex only receives `client_id`,
-and Pi receives `callback_port` as `redirectUri =
-"http://localhost:<port>/callback"`.
-
-Claude Code only accepts an OAuth client secret when a server is added with
-`claude mcp add`. `withmcp [-p <profile>] clientsecret <server>` does that for
-you: it adds a placeholder entry with local scope in
-`~/.local/share/withmcp/claude-secrets` and prompts for the secret. Claude Code
-then uses the stored secret when withmcp passes the server from anywhere else.
-Keep the placeholder entry, and run the command again to change the secret.
+When it detects that a given MCP server is already configured natively for
+the selected harness, it will be left out of the generated config.
 
 ## Building
 
 ```sh
 cargo install --path .
-# Static binary:
 rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
