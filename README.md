@@ -17,7 +17,9 @@ Configured Servers:
   slack       https://mcp.slack.com/mcp  (not enabled)
 
 
-❯ withmcp +linear claude   # launch claude with linear MCP enabled
+❯ withmcp +github claude   # launch claude with linear MCP enabled
+
+❯ withmcp +webdev codex    # launch codex with playwright and github
 ```
 
 Why would you want to do that? These were my motivating examples:
