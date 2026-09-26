@@ -45,10 +45,11 @@ fn main() -> ExitCode {
 fn run() -> Result<ExitCode> {
     let (opts, command) = cli::parse(std::env::args_os().skip(1))?;
     match command {
-        Command::Help => emit(cli::USAGE)?,
+        Command::Help => emit(&render_code_spans(cli::USAGE, use_color()))?,
         Command::Version => emit(&format!("withmcp {}\n", env!("CARGO_PKG_VERSION")))?,
         Command::Edit => return edit(&Selection::new(&opts)?.path),
         Command::Which(argv) => emit(&render_plan(&plan(&opts, argv)?))?,
+        Command::Overview => emit(&render_overview(&plan(&opts, None)?, use_color()))?,
         Command::List => emit(&render_list(&plan(&opts, None)?, use_color()))?,
         Command::Toggle {
             enable,
@@ -490,6 +491,20 @@ fn render_list(plan: &Plan, color: bool) -> String {
     out
 }
 
+fn render_overview(plan: &Plan, color: bool) -> String {
+    let mut out = String::from(
+        "Usage:\n  withmcp [options] [--] <harness> [args...]\n\nConfigured Servers:\n",
+    );
+    let list = render_list(plan, color);
+    if list.is_empty() {
+        outln!(out, "  -");
+    }
+    for line in list.lines() {
+        outln!(out, "  {line}");
+    }
+    out
+}
+
 fn use_color() -> bool {
     color_on(&std::io::stdout())
 }
@@ -519,7 +534,14 @@ fn render_diagnostic(level: Level, message: &str, color: bool) -> String {
     } else {
         format!("{label} ")
     };
-    let mut rest = message;
+    out.push_str(&render_code_spans(message, color));
+    out
+}
+
+/// Drops the backticks around `code` spans, coloring them blue with `color`.
+fn render_code_spans(text: &str, color: bool) -> String {
+    let mut out = String::new();
+    let mut rest = text;
     while let Some((before, after)) = rest.split_once('`')
         && let Some((span, tail)) = after.split_once('`')
     {

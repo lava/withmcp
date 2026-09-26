@@ -16,7 +16,7 @@ Usage:
   withmcp [options] edit
 
 Options:
-  -p, --profile <name>    profile to use (default: $WITHMCP_PROFILE, else `default`)
+  -p, --profile <name>    profile to use (default: `default`)
   +<server>, --enable <server>
                           enable a server for this run; <profile>/<server>
                           pulls one in from another profile
@@ -40,13 +40,19 @@ settings in Claude Code, which only accepts secrets when a server is added.
 It adds a placeholder entry with local scope in
 ~/.local/share/withmcp/claude-secrets; keep that entry.
 
-Profiles live in ~/.config/withmcp/profiles/<name>.toml (or under
-$WITHMCP_CONFIG_DIR); `edit` opens the selected one.
+Profiles live in ~/.config/withmcp/profiles/<name>.toml; `edit` opens the
+selected one.
 
 Everything after <harness> is passed to the harness unchanged. Use `--` to
 launch a harness whose name clashes with a subcommand.
 
 Supported harnesses: claude, codex, pi
+
+Environment variables:
+  WITHMCP_PROFILE         profile to use when `--profile` is not given
+  WITHMCP_CONFIG_DIR      config directory to use instead of ~/.config/withmcp
+  VISUAL, EDITOR          editor for `edit` (default: `vi`)
+  NO_COLOR                disable colored output
 ";
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -77,6 +83,8 @@ pub enum Command {
     },
     Edit,
     Help,
+    /// The launch usage and the configured servers, shown without arguments.
+    Overview,
     Version,
 }
 
@@ -198,7 +206,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
         bail!("`--scope` only applies to `enable` and `disable`");
     }
     let command = match sub {
-        None if harness.is_empty() && !saw_any => Command::Help,
+        None if harness.is_empty() && !saw_any => Command::Overview,
         None if harness.is_empty() => bail!("missing harness (see `withmcp --help`)"),
         None => Command::Launch(harness),
         Some(Subcommand::Which) => Command::Which((!harness.is_empty()).then_some(harness)),
@@ -355,6 +363,6 @@ mod tests {
         assert!(run(&["-p", "work"]).is_err());
         assert!(run(&["edit", "extra"]).is_err());
         assert!(run(&["list", "claude"]).is_err());
-        assert_eq!(run(&[]).unwrap().1, Command::Help);
+        assert_eq!(run(&[]).unwrap().1, Command::Overview);
     }
 }
