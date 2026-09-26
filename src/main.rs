@@ -56,6 +56,7 @@ fn run() -> Result<ExitCode> {
             servers,
             scope,
         } => toggle(&opts, enable, &servers, scope)?,
+        Command::ClientSecret(server) => client_secret(&opts, &server)?,
         Command::Launch(argv) => {
             if opts.interactive {
                 bail!("the picker is not implemented yet");
@@ -191,10 +192,9 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
     })
 }
 
-fn toggle(opts: &Options, enable: bool, servers: &[String], scope: Scope) -> Result<()> {
-    let selection = Selection::new(opts)?;
-    let home = config::home_dir().ok();
-    let shown = display(&selection.path, home.as_deref());
+/// Reads the selected profile file, which must exist.
+fn read_profile(selection: &Selection, home: Option<&Path>) -> Result<(String, Profile)> {
+    let shown = display(&selection.path, home);
     let text = match std::fs::read_to_string(&selection.path) {
         Ok(text) => text,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
@@ -203,6 +203,73 @@ fn toggle(opts: &Options, enable: bool, servers: &[String], scope: Scope) -> Res
         Err(err) => return Err(err).with_context(|| format!("reading {shown}")),
     };
     let profile = Profile::parse(&text).with_context(|| format!("in {shown}"))?;
+    Ok((text, profile))
+}
+
+/// Claude Code only accepts an OAuth client secret when a server is added,
+/// so add a local-scope entry for the server in a directory of our own. The
+/// harness then finds the stored secret when withmcp passes the server.
+fn client_secret(opts: &Options, server: &str) -> Result<()> {
+    let selection = Selection::new(opts)?;
+    let home = config::home_dir().ok();
+    let (_, profile) = read_profile(&selection, home.as_deref())?;
+    let entry = profile
+        .servers
+        .get(server)
+        .with_context(|| format!("unknown server `{server}`"))?;
+    let lookup = |name: &str| std::env::var(name).ok();
+    let expanded = expand::expand_server(&entry.server, &lookup).with_context(|| format!("server `{server}`"))?;
+    let Server::Http {
+        url,
+        oauth: Some(oauth),
+        ..
+    } = expanded
+    else {
+        bail!("server `{server}` has no `oauth` settings, so it needs no client secret");
+    };
+    let name = format!("{}{server}", resolve::prefix(&selection.name, &profile)?);
+    let dir = config::data_dir()?.join("claude-secrets");
+    std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    // Claude Code keys local-scope servers by the canonical project path.
+    let dir = dir.canonicalize()?;
+    // Replace an entry from an earlier run so the secret can be changed.
+    let _ = std::process::Command::new("claude")
+        .args(["mcp", "remove", "--scope", "local", &name])
+        .current_dir(&dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    let mut command = std::process::Command::new("claude");
+    command.current_dir(&dir).args([
+        "mcp",
+        "add",
+        "--scope",
+        "local",
+        "--transport",
+        "http",
+        "--client-id",
+        &oauth.client_id,
+        "--client-secret",
+    ]);
+    if let Some(port) = oauth.callback_port {
+        command.args(["--callback-port", &port.to_string()]);
+    }
+    command.arg(&name).arg(&url);
+    let status = command.status().context("cannot run `claude`")?;
+    if !status.success() {
+        bail!("`claude mcp add` failed with {status}");
+    }
+    emit(&format!(
+        "stored the client secret for `{name}`; keep its placeholder entry in {}\n",
+        display(&dir, home.as_deref())
+    ))
+}
+
+fn toggle(opts: &Options, enable: bool, servers: &[String], scope: Scope) -> Result<()> {
+    let selection = Selection::new(opts)?;
+    let home = config::home_dir().ok();
+    let shown = display(&selection.path, home.as_deref());
+    let (text, profile) = read_profile(&selection, home.as_deref())?;
     let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("in {shown}"))?;
     let cwd = current_dir()?;
     let mut report = String::new();

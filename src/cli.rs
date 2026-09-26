@@ -12,6 +12,7 @@ Usage:
   withmcp [options] which [[--] <harness> [args...]]
   withmcp [options] enable [--scope global|project] <server>...
   withmcp [options] disable [--scope global|project] <server>...
+  withmcp [options] clientsecret <server>
   withmcp [options] edit
   withmcp [options] pick
 
@@ -31,6 +32,11 @@ shows why, and what a launch of <harness> would do.
 `enable` and `disable` change the selected profile file: `--scope global`
 (the default) sets the server's `enabled` flag, `--scope project` changes the
 path rule for the current directory.
+
+`clientsecret` stores the OAuth client secret of a server with `oauth`
+settings in Claude Code, which only accepts secrets when a server is added.
+It adds a placeholder entry with local scope in
+~/.local/share/withmcp/claude-secrets; keep that entry.
 
 Profiles live in ~/.config/withmcp/profiles/<name>.toml (or under
 $WITHMCP_CONFIG_DIR); `edit` opens the selected one.
@@ -61,6 +67,7 @@ pub enum Command {
     Launch(Vec<OsString>),
     Which(Option<Vec<OsString>>),
     List,
+    ClientSecret(String),
     /// `enable` (true) or `disable` (false).
     Toggle {
         enable: bool,
@@ -97,6 +104,7 @@ enum Subcommand {
     List,
     Enable,
     Disable,
+    ClientSecret,
     Edit,
     Pick,
 }
@@ -112,9 +120,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
     let mut scope = None;
     while let Some(arg) = args.next() {
         saw_any = true;
-        let toggling = matches!(sub, Some(Subcommand::Enable | Subcommand::Disable));
+        let takes_names = matches!(
+            sub,
+            Some(Subcommand::Enable | Subcommand::Disable | Subcommand::ClientSecret)
+        );
         if arg == "--" {
-            if toggling {
+            if takes_names {
                 for name in args.by_ref() {
                     names.push(utf8(name)?);
                 }
@@ -163,7 +174,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     && let Some(found) = subcommand(s)
                 {
                     sub = Some(found);
-                } else if toggling {
+                } else if takes_names {
                     names.push(s.to_string());
                 } else {
                     harness.push(arg);
@@ -181,6 +192,11 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
         None if harness.is_empty() => bail!("missing harness (see `withmcp --help`)"),
         None => Command::Launch(harness),
         Some(Subcommand::Which) => Command::Which((!harness.is_empty()).then_some(harness)),
+        Some(Subcommand::ClientSecret) => {
+            let [name] = <[String; 1]>::try_from(names)
+                .map_err(|_| anyhow::anyhow!("`clientsecret` takes exactly one server name"))?;
+            Command::ClientSecret(name)
+        }
         Some(sub @ (Subcommand::Enable | Subcommand::Disable)) => {
             if names.is_empty() {
                 bail!("missing server name (see `withmcp --help`)");
@@ -214,6 +230,7 @@ fn subcommand(s: &str) -> Option<Subcommand> {
         "list" => Some(Subcommand::List),
         "enable" => Some(Subcommand::Enable),
         "disable" => Some(Subcommand::Disable),
+        "clientsecret" => Some(Subcommand::ClientSecret),
         "edit" => Some(Subcommand::Edit),
         "pick" => Some(Subcommand::Pick),
         _ => None,
@@ -303,6 +320,15 @@ mod tests {
         assert!(run(&["enable", "--scope", "planet", "a"]).is_err());
         assert!(run(&["+x", "enable", "a"]).is_err());
         assert!(run(&["--scope", "global", "list"]).is_err());
+    }
+
+    #[test]
+    fn client_secret() {
+        let (opts, cmd) = run(&["-p", "work", "clientsecret", "slack"]).unwrap();
+        assert_eq!(opts.profile.as_deref(), Some("work"));
+        assert_eq!(cmd, Command::ClientSecret("slack".into()));
+        assert!(run(&["clientsecret"]).is_err());
+        assert!(run(&["clientsecret", "a", "b"]).is_err());
     }
 
     #[test]

@@ -200,6 +200,15 @@ pub fn config_dir() -> Result<PathBuf> {
     Ok(base.join("withmcp"))
 }
 
+/// `$XDG_DATA_HOME/withmcp`, else `~/.local/share/withmcp`.
+pub fn data_dir() -> Result<PathBuf> {
+    let base = match std::env::var_os("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
+        Some(dir) => PathBuf::from(dir),
+        None => home_dir()?.join(".local").join("share"),
+    };
+    Ok(base.join("withmcp"))
+}
+
 pub fn profile_path(config_dir: &Path, profile: &str) -> Result<PathBuf> {
     // Also keeps names like `../x` from escaping the profiles directory.
     if !is_bare_key(profile) {

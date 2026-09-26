@@ -56,6 +56,13 @@ mcp login`). For servers without dynamic client registration, such as Slack's,
 `oauth = { client_id = "...", callback_port = 3118 }` names a pre-registered
 OAuth client; Codex only receives `client_id`.
 
+Claude Code only accepts an OAuth client secret when a server is added with
+`claude mcp add`. `withmcp [-p <profile>] clientsecret <server>` does that for
+you: it adds a placeholder entry with local scope in
+`~/.local/share/withmcp/claude-secrets` and prompts for the secret. Claude Code
+then uses the stored secret when withmcp passes the server from anywhere else.
+Keep the placeholder entry, and run the command again to change the secret.
+
 ## Building
 
 ```sh

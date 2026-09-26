@@ -103,12 +103,19 @@ pub fn resolve(
         set(&mut decisions, server, enabled, &Source::Cli)?;
     }
 
-    let prefix = match &profile.prefix {
-        Some(prefix) => prefix.clone(),
-        None if is_bare_key(name) => format!("{name}_"),
+    Ok(Resolution {
+        prefix: prefix(name, profile)?,
+        decisions,
+    })
+}
+
+/// The prefix of server names of profile `name` passed to the harness.
+pub fn prefix(name: &str, profile: &Profile) -> Result<String> {
+    match &profile.prefix {
+        Some(prefix) => Ok(prefix.clone()),
+        None if is_bare_key(name) => Ok(format!("{name}_")),
         None => bail!("cannot derive a server name prefix from profile name `{name}`; set `prefix`"),
-    };
-    Ok(Resolution { prefix, decisions })
+    }
 }
 
 fn set(
