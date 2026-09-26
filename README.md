@@ -19,7 +19,7 @@ Why would you want to do that? These were my motivating examples:
 
 ```sh
 cargo install --git https://github.com/lava/withmcp
-withmcp edit                 # create ~/.config/withmcp/profiles/default.toml
+withmcp edit  # create ~/.config/withmcp/profiles/default.toml
 ```
 
 Create a minimal profile:
