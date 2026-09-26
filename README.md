@@ -35,6 +35,10 @@ Run with that server enabled:
 withmcp +linear claude
 ```
 
+## Supported agents
+
+Currently `claude`, `codex` and `pi` are supported.
+
 ## Usage
 
 Enable a server by default:
