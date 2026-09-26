@@ -1,8 +1,5 @@
 ## withmcp profile. Uncomment and adapt the entries below.
-##
-## The file name is the profile name. Select a profile with -p/--profile or
-## $WITHMCP_PROFILE; `default.toml` is used when neither is set.
-##
+
 ## Servers are passed to the harness as <prefix><name>, e.g. `work_linear`,
 ## so the same server in two profiles gets separate logins. The prefix
 ## defaults to "<profile>_"; set it to "" to pass the plain names.
@@ -14,38 +11,33 @@
 # url = "https://mcp.linear.app/mcp"
 # enabled = true
 
-## For servers without dynamic client registration, name the OAuth client
-## of your own app. `callback_port` is only supported by Claude Code.
-# [servers.slack]
-# url = "https://mcp.slack.com/mcp"
-# oauth = { client_id = "1234567890.1234567890", callback_port = 3118 }
+# [servers.github]
+# url = "https://api.githubcopilot.com/mcp/"
+## Values may reference the launching shell's environment with ${VAR}, or
+## include the output of a command with $(cmd), e.g.
+## `Authorization = "Bearer ${GH_TOKEN}"`.
+# headers = { Authorization = "Bearer $(gh auth token)" }
 
 # [servers.playwright]
 # command = "npx"
 # args = ["@playwright/mcp@latest"]
-## Values may reference the launching shell's environment with ${VAR}.
-# env = { DEBUG = "${PLAYWRIGHT_DEBUG}" }
-
-## $(command) is replaced by the one line the command prints. It runs
-## without a shell, only when the server is enabled.
-# [servers.github]
-# url = "https://api.githubcopilot.com/mcp/"
-# headers = { Authorization = "Bearer $(gh auth token)" }
 
 # [servers.chrome]
 # command = "npx"
 # args = ["-y", "chrome-devtools-mcp@latest"]
 
-## Groups switch related servers together. A server's own `enabled` flag
-## takes precedence over its groups.
+## Groups switch related servers together.
 # [groups.devtools]
 # servers = ["playwright", "chrome"]
+# enabled = true
 
-## Path rules apply when the current directory is the path or below it.
-## More specific paths are applied last; within a rule, groups are applied
-## before servers.
-# [paths."~/code/myproject"]
-# enable = ["devtools"]
+## Advanced options
 
-# [paths."~/code/myproject/docs"]
-# disable = ["linear", "chrome"]
+## For servers without dynamic client registration, name the OAuth client
+## of your own app. For servers that for whatever reason only support
+## confidential clients (*cough* Slack *cough*), use the `withmcp clientsecret`
+## subcommand as a one-time setup. This is currently only supported by
+## Claude Code.
+# [servers.slack]
+# url = "https://mcp.slack.com/mcp"
+# oauth = { client_id = "<your client id>", callback_port = 3118 }

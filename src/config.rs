@@ -292,11 +292,11 @@ mod tests {
             .collect();
         let profile = Profile::parse(&uncommented).unwrap();
         assert_eq!(profile.prefix.as_deref(), Some(""));
-        assert_eq!(profile.servers.len(), 4);
+        assert_eq!(profile.servers.len(), 5);
         assert!(profile.servers["linear"].enabled);
         assert!(!profile.servers["slack"].enabled);
+        assert!(profile.groups["devtools"].enabled);
         assert_eq!(profile.groups["devtools"].servers, ["playwright", "chrome"]);
-        assert_eq!(profile.paths.len(), 2);
     }
 
     #[test]
