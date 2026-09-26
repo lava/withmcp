@@ -4,7 +4,7 @@ Launch a coding-agent harness with a configurable set of extra MCP servers.
 
 ```sh
 withmcp claude --resume                  # servers from the `default` profile
-withmcp -p work +playwright -d linear codex
+withmcp -p work +playwright -linear codex
 withmcp +work/slack claude               # one server from another profile
 WITHMCP_PROFILE=work withmcp claude
 withmcp list                             # servers enabled in the current directory
@@ -43,9 +43,11 @@ A server is on unless it has `enabled = false`. Later steps win:
 1. Each server's `enabled` flag.
 2. Path rules (`[paths."<dir>"]`) matching the current directory, least
    specific first.
-3. `-e`/`+<server>` and `-d` on the command line, in order.
+3. `+<server>`/`--enable <server>` and `-<server>`/`--disable <server>` on
+   the command line, in order. Use `--disable` for servers named `p`, `i`,
+   `h` or `V`, whose `-<server>` form is an option.
 
-`+<profile>/<server>` (or `-e <profile>/<server>`) additionally enables a
+`+<profile>/<server>` (or `--enable <profile>/<server>`) additionally enables a
 server of another profile for this run, regardless of that profile's
 `enabled` flags and path rules. It keeps that profile's prefix, so
 `+work/slack` is passed as `work_slack` and shares its login and client

@@ -18,9 +18,11 @@ Usage:
 
 Options:
   -p, --profile <name>    profile to use (default: $WITHMCP_PROFILE, else `default`)
-  -e, --enable <server>   enable a server for this run (shorthand: +<server>);
-                          <profile>/<server> pulls one in from another profile
-  -d, --disable <server>  disable a server for this run
+  +<server>, --enable <server>
+                          enable a server for this run; <profile>/<server>
+                          pulls one in from another profile
+  -<server>, --disable <server>
+                          disable a server for this run
   -i, --interactive       pick servers before launching
       --config <file>     use this profile file instead of a named profile;
                           the default prefix is derived from its file name
@@ -150,8 +152,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
             "-V" | "--version" => return Ok((opts, Command::Version)),
             "-i" | "--interactive" => opts.interactive = true,
             "-p" | "--profile" => opts.profile = Some(value(s)?),
-            "-e" | "--enable" => opts.overrides.push(Override::Enable(value(s)?)),
-            "-d" | "--disable" => opts.overrides.push(Override::Disable(value(s)?)),
+            "--enable" => opts.overrides.push(Override::Enable(value(s)?)),
+            "--disable" => opts.overrides.push(Override::Disable(value(s)?)),
             "--config" => opts.config = Some(value(s)?.into()),
             "--scope" => scope = Some(value(s)?.parse()?),
             _ => {
@@ -169,6 +171,18 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     && !v.is_empty()
                 {
                     opts.overrides.push(Override::Enable(v.into()));
+                } else if let Some(v) = s.strip_prefix('-')
+                    && !v.is_empty()
+                    && !v.starts_with('-')
+                {
+                    const LONG: [&str; 8] =
+                        ["help", "version", "interactive", "profile", "enable", "disable", "config", "scope"];
+                    let name = v.split('=').next().unwrap_or(v);
+                    if LONG.contains(&name) {
+                        bail!("unknown option `{s}`; did you mean `-{s}`?");
+                    }
+                    // Every other single-dash word disables a server.
+                    opts.overrides.push(Override::Disable(v.into()));
                 } else if s.starts_with('-') {
                     bail!("unknown option `{s}` (see `withmcp --help`)");
                 } else if sub.is_none()
@@ -203,7 +217,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                 bail!("missing server name (see `withmcp --help`)");
             }
             if !opts.overrides.is_empty() {
-                bail!("`-e`, `-d` and `+<server>` cannot be combined with `enable` or `disable`");
+                bail!("`+<server>` and `-<server>` cannot be combined with `enable` or `disable`");
             }
             Command::Toggle {
                 enable: sub == Subcommand::Enable,
@@ -264,7 +278,10 @@ mod tests {
 
     #[test]
     fn options_before_harness() {
-        let (opts, cmd) = run(&["-p", "work", "+gh", "-d", "slack", "--enable=pw", "+home/x", "codex", "exec"]).unwrap();
+        let (opts, cmd) = run(&[
+            "-p", "work", "+gh", "-slack", "--enable=pw", "+home/x", "--disable", "p", "codex", "exec",
+        ])
+        .unwrap();
         assert_eq!(opts.profile.as_deref(), Some("work"));
         assert_eq!(
             opts.overrides,
@@ -273,6 +290,7 @@ mod tests {
                 Override::Disable("slack".into()),
                 Override::Enable("pw".into()),
                 Override::Enable("home/x".into()),
+                Override::Disable("p".into()),
             ]
         );
         assert_eq!(cmd, Command::Launch(argv(&["codex", "exec"])));
@@ -335,7 +353,10 @@ mod tests {
 
     #[test]
     fn errors() {
-        assert!(run(&["-x", "claude"]).is_err());
+        assert!(run(&["--x", "claude"]).is_err());
+        assert!(run(&["-", "claude"]).is_err());
+        let err = run(&["-profile", "work", "claude"]).unwrap_err();
+        assert!(err.to_string().contains("did you mean `--profile`"));
         assert!(run(&["-p"]).is_err());
         assert!(run(&["-p", "work"]).is_err());
         assert!(run(&["edit", "extra"]).is_err());

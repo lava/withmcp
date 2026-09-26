@@ -183,7 +183,7 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
                 None => overrides.push(o.clone()),
             },
             Override::Disable(spec) if spec.contains('/') => {
-                bail!("`-d {spec}`: servers of other profiles can only be enabled")
+                bail!("`-{spec}`: servers of other profiles can only be enabled")
             }
             Override::Disable(_) => overrides.push(o.clone()),
         }
