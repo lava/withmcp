@@ -67,7 +67,14 @@ give the requested result anyway; `--scope project` adds the name to the
 `enable` or `disable` list of the path rule for the current directory. If a path rule
 still overrides the result in the current directory, withmcp warns about it.
 
-String values of servers may reference the environment with `${VAR}`.
+String values of servers may reference the environment with `${VAR}`, and
+include the output of a command with `$(command)`, for example `headers = {
+Authorization = "Bearer $(gh auth token)" }`. withmcp runs the command itself,
+without a shell: its arguments are split on whitespace, and pipes, quotes and
+variables are not supported. The command must print exactly one line, which
+replaces the `$(...)`. Commands only run for servers that are enabled for the
+launch, and the values never enter the harness's environment, which makes
+`$(pass ...)` a way to keep secrets out of the profile.
 Authentication is left to the harness (e.g. `/mcp` in Claude Code or `codex
 mcp login`). For servers without dynamic client registration, such as Slack's,
 `oauth = { client_id = "...", callback_port = 3118 }` names a pre-registered
@@ -91,8 +98,8 @@ cargo build --release --target x86_64-unknown-linux-musl
 
 ## Known limitations
 
-- Codex receives servers as command-line arguments, so expanded `${VAR}`
-  values are visible in the process list.
+- Codex receives servers as command-line arguments, so expanded `${VAR}` and
+  `$(command)` values are visible in the process list.
 - Detection of servers the harness already defines is best-effort. For
   example, Claude Code plugins and managed configs are not checked.
 - `list` does not check for collisions with a harness's own servers; use

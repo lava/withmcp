@@ -26,6 +26,12 @@
 ## Values may reference the launching shell's environment with ${VAR}.
 # env = { DEBUG = "${PLAYWRIGHT_DEBUG}" }
 
+## $(command) is replaced by the one line the command prints. It runs
+## without a shell, only when the server is enabled.
+# [servers.github]
+# url = "https://api.githubcopilot.com/mcp/"
+# headers = { Authorization = "Bearer $(gh auth token)" }
+
 # [servers.chrome]
 # command = "npx"
 # args = ["-y", "chrome-devtools-mcp@latest"]

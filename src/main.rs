@@ -134,7 +134,7 @@ struct Target {
     /// Enabled servers the harness already defines, by exposed name, with
     /// the defining file.
     collisions: Vec<(String, PathBuf)>,
-    /// Enabled servers to add by exposed name, before `${VAR}` expansion.
+    /// Enabled servers to add by exposed name, before `${VAR}` and `$(command)` expansion.
     servers: BTreeMap<String, Server>,
 }
 
@@ -304,8 +304,7 @@ fn client_secret(opts: &Options, server: &str) -> Result<()> {
         .servers
         .get(server)
         .with_context(|| format!("unknown server `{server}`"))?;
-    let lookup = |name: &str| std::env::var(name).ok();
-    let expanded = expand::expand_server(&entry.server, &lookup).with_context(|| format!("server `{server}`"))?;
+    let expanded = expand::expand_server(&entry.server, &expand::Sources::system()).with_context(|| format!("server `{server}`"))?;
     let Server::Http {
         url,
         oauth: Some(oauth),
@@ -424,12 +423,12 @@ fn launch(plan: Plan) -> Result<ExitCode> {
             ),
         );
     }
-    let lookup = |name: &str| std::env::var(name).ok();
+    let sources = expand::Sources::system();
     let servers = target
         .servers
         .iter()
         .map(|(name, server)| {
-            let server = expand::expand_server(server, &lookup)
+            let server = expand::expand_server(server, &sources)
                 .with_context(|| format!("server `{name}`"))?;
             Ok((name.clone(), server))
         })
@@ -584,9 +583,9 @@ fn render_plan(plan: &Plan) -> String {
     for (name, path) in &target.collisions {
         outln!(out, "  skipping `{name}`: already defined in {}", display(path, home));
     }
-    // Built from unexpanded servers so `${VAR}` values are not printed.
+    // Built from unexpanded servers so secrets are not printed and no commands run.
     outln!(out);
-    outln!(out, "command (before ${{VAR}} expansion):");
+    outln!(out, "command (before ${{VAR}} and $(command) expansion):");
     match target.harness.prepare(&target.servers, &adapters::runtime_dir()) {
         Ok(prepared) => {
             let words: Vec<_> = std::iter::once(&target.argv[0])
