@@ -4,6 +4,7 @@ mod config;
 mod expand;
 mod native;
 mod resolve;
+mod update;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -13,7 +14,7 @@ use std::process::ExitCode;
 use anyhow::{Context, Result, bail};
 
 use crate::adapters::Harness;
-use crate::cli::{Command, Options};
+use crate::cli::{Command, Options, Scope};
 use crate::config::{Profile, Server};
 use crate::native::{Locations, Scan};
 use crate::resolve::Resolution;
@@ -50,6 +51,11 @@ fn run() -> Result<ExitCode> {
         Command::Pick => bail!("the picker is not implemented yet"),
         Command::Which(argv) => emit(&render_plan(&plan(&opts, argv)?))?,
         Command::List => emit(&render_list(&plan(&opts, None)?))?,
+        Command::Toggle {
+            enable,
+            servers,
+            scope,
+        } => toggle(&opts, enable, &servers, scope)?,
         Command::Launch(argv) => {
             if opts.interactive {
                 bail!("the picker is not implemented yet");
@@ -140,9 +146,7 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             name = selection.name,
         ),
     };
-    let cwd = std::env::current_dir()
-        .and_then(|d| d.canonicalize())
-        .context("cannot determine the current directory")?;
+    let cwd = current_dir()?;
     let resolution = resolve::resolve(
         &selection.name,
         &profile,
@@ -185,6 +189,64 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         resolution,
         target,
     })
+}
+
+fn toggle(opts: &Options, enable: bool, servers: &[String], scope: Scope) -> Result<()> {
+    let selection = Selection::new(opts)?;
+    let home = config::home_dir().ok();
+    let shown = display(&selection.path, home.as_deref());
+    let text = match std::fs::read_to_string(&selection.path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("{shown} does not exist (create it with `withmcp edit`)")
+        }
+        Err(err) => return Err(err).with_context(|| format!("reading {shown}")),
+    };
+    let profile = Profile::parse(&text).with_context(|| format!("in {shown}"))?;
+    let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("in {shown}"))?;
+    let cwd = current_dir()?;
+    let mut report = String::new();
+    for server in servers {
+        match update::toggle(&mut doc, &profile, server, enable, scope, &cwd, home.as_deref())? {
+            update::Outcome::Changed(change) => outln!(report, "{change}"),
+            update::Outcome::Unchanged(note) => outln!(report, "{note}"),
+        }
+    }
+    let updated_text = doc.to_string();
+    let updated = Profile::parse(&updated_text).context("bug: the updated profile is invalid")?;
+    if updated_text != text {
+        write_atomically(&selection.path, &updated_text).with_context(|| format!("writing {shown}"))?;
+        outln!(report, "updated {shown}");
+    }
+    emit(&report)?;
+    let resolution = resolve::resolve(&selection.name, &updated, &cwd, home.as_deref(), &[])?;
+    for server in servers {
+        let decision = &resolution.decisions[server];
+        if decision.enabled != enable {
+            let state = if decision.enabled { "enabled" } else { "disabled" };
+            let hint = match (&decision.source, scope) {
+                (resolve::Source::Path(_), Scope::Global) => "; use `--scope project` to override it here",
+                _ => "",
+            };
+            eprintln!(
+                "withmcp: warning: `{server}` is still {state} here by {}{hint}",
+                decision.source
+            );
+        }
+    }
+    Ok(())
+}
+
+fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, path)
+}
+
+fn current_dir() -> Result<PathBuf> {
+    std::env::current_dir()
+        .and_then(|d| d.canonicalize())
+        .context("cannot determine the current directory")
 }
 
 fn launch(plan: Plan) -> Result<ExitCode> {

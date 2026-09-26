@@ -9,6 +9,8 @@ WITHMCP_PROFILE=work withmcp claude
 withmcp list                             # servers enabled in the current directory
 withmcp which claude                     # ...and why, plus what a launch would do
 withmcp -p work edit                     # open the profile in $VISUAL/$EDITOR
+withmcp disable linear                   # set `enabled = false` in the profile
+withmcp enable --scope project playwright  # enable in a path rule for this dir
 withmcp -- edit                          # launch a harness called `edit`
 ```
 
@@ -41,6 +43,12 @@ A server is on unless it has `enabled = false`. Later steps win:
 2. Path rules (`[paths."<dir>"]`) matching the current directory, least
    specific first.
 3. `-e`/`+<server>` and `-d` on the command line, in order.
+
+`withmcp enable` and `withmcp disable` edit the selected profile file and
+keep its comments and formatting. `--scope global` (the default) changes the
+server's `enabled` flag; `--scope project` adds the server to the `enable` or
+`disable` list of the path rule for the current directory. If a path rule
+still overrides the result in the current directory, withmcp warns about it.
 
 String values of servers may reference the environment with `${VAR}`.
 Authentication is left to the harness (e.g. `/mcp` in Claude Code or `codex

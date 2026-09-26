@@ -10,6 +10,8 @@ Usage:
   withmcp [options] [--] <harness> [args...]
   withmcp [options] list
   withmcp [options] which [[--] <harness> [args...]]
+  withmcp [options] enable [--scope global|project] <server>...
+  withmcp [options] disable [--scope global|project] <server>...
   withmcp [options] edit
   withmcp [options] pick
 
@@ -25,6 +27,10 @@ Options:
 
 `list` prints the servers enabled in the current directory; `which` also
 shows why, and what a launch of <harness> would do.
+
+`enable` and `disable` change the selected profile file: `--scope global`
+(the default) sets the server's `enabled` flag, `--scope project` changes the
+path rule for the current directory.
 
 Profiles live in ~/.config/withmcp/profiles/<name>.toml (or under
 $WITHMCP_CONFIG_DIR); `edit` opens the selected one.
@@ -55,16 +61,42 @@ pub enum Command {
     Launch(Vec<OsString>),
     Which(Option<Vec<OsString>>),
     List,
+    /// `enable` (true) or `disable` (false).
+    Toggle {
+        enable: bool,
+        servers: Vec<String>,
+        scope: Scope,
+    },
     Edit,
     Pick,
     Help,
     Version,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    Global,
+    Project,
+}
+
+impl std::str::FromStr for Scope {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "global" => Ok(Scope::Global),
+            "project" => Ok(Scope::Project),
+            _ => bail!("invalid scope `{s}` (expected `global` or `project`)"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Subcommand {
     Which,
     List,
+    Enable,
+    Disable,
     Edit,
     Pick,
 }
@@ -76,9 +108,17 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
     let mut sub = None;
     let mut saw_any = false;
     let mut harness = Vec::new();
+    let mut names = Vec::new();
+    let mut scope = None;
     while let Some(arg) = args.next() {
         saw_any = true;
+        let toggling = matches!(sub, Some(Subcommand::Enable | Subcommand::Disable));
         if arg == "--" {
+            if toggling {
+                for name in args.by_ref() {
+                    names.push(utf8(name)?);
+                }
+            }
             harness.extend(args);
             break;
         }
@@ -101,6 +141,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
             "-e" | "--enable" => opts.overrides.push(Override::Enable(value(s)?)),
             "-d" | "--disable" => opts.overrides.push(Override::Disable(value(s)?)),
             "--config" => opts.config = Some(value(s)?.into()),
+            "--scope" => scope = Some(value(s)?.parse()?),
             _ => {
                 if let Some(v) = s.strip_prefix("--profile=") {
                     opts.profile = Some(v.into());
@@ -110,6 +151,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     opts.overrides.push(Override::Disable(v.into()));
                 } else if let Some(v) = s.strip_prefix("--config=") {
                     opts.config = Some(v.into());
+                } else if let Some(v) = s.strip_prefix("--scope=") {
+                    scope = Some(v.parse()?);
                 } else if let Some(v) = s.strip_prefix('+')
                     && !v.is_empty()
                 {
@@ -120,6 +163,8 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     && let Some(found) = subcommand(s)
                 {
                     sub = Some(found);
+                } else if toggling {
+                    names.push(s.to_string());
                 } else {
                     harness.push(arg);
                     harness.extend(args);
@@ -128,11 +173,27 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
             }
         }
     }
+    if scope.is_some() && !matches!(sub, Some(Subcommand::Enable | Subcommand::Disable)) {
+        bail!("`--scope` only applies to `enable` and `disable`");
+    }
     let command = match sub {
         None if harness.is_empty() && !saw_any => Command::Help,
         None if harness.is_empty() => bail!("missing harness (see `withmcp --help`)"),
         None => Command::Launch(harness),
         Some(Subcommand::Which) => Command::Which((!harness.is_empty()).then_some(harness)),
+        Some(sub @ (Subcommand::Enable | Subcommand::Disable)) => {
+            if names.is_empty() {
+                bail!("missing server name (see `withmcp --help`)");
+            }
+            if !opts.overrides.is_empty() {
+                bail!("`-e`, `-d` and `+<server>` cannot be combined with `enable` or `disable`");
+            }
+            Command::Toggle {
+                enable: sub == Subcommand::Enable,
+                servers: names,
+                scope: scope.unwrap_or(Scope::Global),
+            }
+        }
         Some(sub @ (Subcommand::List | Subcommand::Edit | Subcommand::Pick)) => {
             if let Some(extra) = harness.first() {
                 bail!("unexpected argument `{}`", extra.to_string_lossy());
@@ -151,10 +212,17 @@ fn subcommand(s: &str) -> Option<Subcommand> {
     match s {
         "which" => Some(Subcommand::Which),
         "list" => Some(Subcommand::List),
+        "enable" => Some(Subcommand::Enable),
+        "disable" => Some(Subcommand::Disable),
         "edit" => Some(Subcommand::Edit),
         "pick" => Some(Subcommand::Pick),
         _ => None,
     }
+}
+
+fn utf8(arg: OsString) -> Result<String> {
+    arg.into_string()
+        .map_err(|arg| anyhow::anyhow!("`{}` is not valid UTF-8", arg.to_string_lossy()))
 }
 
 #[cfg(test)]
@@ -208,6 +276,33 @@ mod tests {
         assert_eq!(opts.profile.as_deref(), Some("work"));
         assert_eq!(cmd, Command::Which(Some(argv(&["claude"]))));
         assert_eq!(run(&["which", "which"]).unwrap().1, Command::Which(Some(argv(&["which"]))));
+    }
+
+    #[test]
+    fn toggle() {
+        let (opts, cmd) = run(&["-p", "work", "enable", "a", "--scope", "project", "b"]).unwrap();
+        assert_eq!(opts.profile.as_deref(), Some("work"));
+        assert_eq!(
+            cmd,
+            Command::Toggle {
+                enable: true,
+                servers: vec!["a".into(), "b".into()],
+                scope: Scope::Project,
+            }
+        );
+        assert_eq!(
+            run(&["disable", "--", "-weird"]).unwrap().1,
+            Command::Toggle {
+                enable: false,
+                servers: vec!["-weird".into()],
+                scope: Scope::Global,
+            }
+        );
+        assert_eq!(run(&["--", "enable"]).unwrap().1, Command::Launch(argv(&["enable"])));
+        assert!(run(&["enable"]).is_err());
+        assert!(run(&["enable", "--scope", "planet", "a"]).is_err());
+        assert!(run(&["+x", "enable", "a"]).is_err());
+        assert!(run(&["--scope", "global", "list"]).is_err());
     }
 
     #[test]

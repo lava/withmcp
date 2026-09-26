@@ -127,7 +127,7 @@ fn set(
     Ok(())
 }
 
-fn normalize(raw: &str, home: Option<&Path>) -> Result<PathBuf> {
+pub fn normalize(raw: &str, home: Option<&Path>) -> Result<PathBuf> {
     let path = match raw.strip_prefix('~') {
         Some(rest) if rest.is_empty() || rest.starts_with('/') => {
             let Some(home) = home else {
