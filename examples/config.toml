@@ -1,0 +1,34 @@
+## withmcp configuration. Uncomment and adapt the entries below.
+##
+## Servers are defined once under [servers.<name>] and are off unless a
+## profile, a path rule or the command line enables them.
+
+# [servers.github]
+# url = "https://api.githubcopilot.com/mcp/"
+
+# [servers.linear]
+# url = "https://mcp.linear.app/mcp"
+
+# [servers.playwright]
+# command = "npx"
+# args = ["@playwright/mcp@latest"]
+## Values may reference the launching shell's environment with ${VAR}.
+# env = { DEBUG = "${PLAYWRIGHT_DEBUG}" }
+
+## Used when neither -p/--profile nor $WITHMCP_PROFILE selects a profile.
+# [profiles.default]
+# enable = ["github"]
+
+## Path rules apply when the current directory is the path or below it.
+## More specific paths are applied last.
+# [profiles.default.paths."~/code/myproject"]
+# enable = ["linear"]
+
+# [profiles.default.paths."~/code/myproject/web"]
+# enable = ["playwright"]
+# disable = ["linear"]
+
+## Profiles inherit settings and path rules from the profile they extend.
+# [profiles.work]
+# extends = "default"
+# enable = ["linear"]
