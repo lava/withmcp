@@ -36,7 +36,7 @@ fn main() -> ExitCode {
     match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("withmcp: {err:#}");
+            diagnose(Level::Error, &format!("{err:#}"));
             ExitCode::from(2)
         }
     }
@@ -388,9 +388,9 @@ fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Resul
                 (resolve::Source::Path { .. }, Scope::Global) => "; use `--scope project` to override it here",
                 _ => "",
             };
-            eprintln!(
-                "withmcp: warning: `{server}` is still {state} here by {}{hint}",
-                decision.source
+            diagnose(
+                Level::Warning,
+                &format!("`{server}` is still {state} here by {}{hint}", decision.source),
             );
         }
     }
@@ -412,13 +412,16 @@ fn current_dir() -> Result<PathBuf> {
 fn launch(plan: Plan) -> Result<ExitCode> {
     let target = plan.target.context("no harness to launch")?;
     for warning in &target.scan.warnings {
-        eprintln!("withmcp: warning: {warning}");
+        diagnose(Level::Warning, warning);
     }
     for (name, path) in &target.collisions {
-        eprintln!(
-            "withmcp: warning: not adding `{name}`: {} already defines it in {}",
-            target.harness.name(),
-            display(path, plan.home.as_deref())
+        diagnose(
+            Level::Warning,
+            &format!(
+                "not adding `{name}`: {} already defines it in {}",
+                target.harness.name(),
+                display(path, plan.home.as_deref())
+            ),
         );
     }
     let lookup = |name: &str| std::env::var(name).ok();
@@ -486,8 +489,48 @@ fn render_list(plan: &Plan, color: bool) -> String {
 }
 
 fn use_color() -> bool {
-    use std::io::IsTerminal;
-    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+    color_on(&std::io::stdout())
+}
+
+fn color_on(stream: &impl std::io::IsTerminal) -> bool {
+    stream.is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
+}
+
+enum Level {
+    Error,
+    Warning,
+}
+
+fn diagnose(level: Level, message: &str) {
+    eprintln!("{}", render_diagnostic(level, message, color_on(&std::io::stderr())));
+}
+
+/// Formats a message for stderr, dropping the backticks around `code`
+/// spans. With `color`, the label is red or yellow and the spans are blue.
+fn render_diagnostic(level: Level, message: &str, color: bool) -> String {
+    let (label, code) = match level {
+        Level::Error => ("error:", "31"),
+        Level::Warning => ("warning:", "33"),
+    };
+    let mut out = if color {
+        format!("\x1b[1;{code}m{label}\x1b[0m ")
+    } else {
+        format!("{label} ")
+    };
+    let mut rest = message;
+    while let Some((before, after)) = rest.split_once('`')
+        && let Some((span, tail)) = after.split_once('`')
+    {
+        out.push_str(before);
+        if color {
+            out.push_str(&format!("\x1b[94m{span}\x1b[0m"));
+        } else {
+            out.push_str(span);
+        }
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 fn render_plan(plan: &Plan) -> String {
@@ -607,8 +650,31 @@ fn edit(path: &Path) -> Result<ExitCode> {
         bail!("editor exited with {status}");
     }
     if let Err(err) = Profile::load(path) {
-        eprintln!("withmcp: the profile is invalid: {err:#}");
+        diagnose(Level::Error, &format!("the profile is invalid: {err:#}"));
         return Ok(ExitCode::FAILURE);
     }
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagnostics() {
+        let message = "server `github`: environment variable `GITHUB_MCP_PAT` is not set";
+        assert_eq!(
+            render_diagnostic(Level::Error, message, false),
+            "error: server github: environment variable GITHUB_MCP_PAT is not set"
+        );
+        assert_eq!(
+            render_diagnostic(Level::Error, message, true),
+            "\x1b[1;31merror:\x1b[0m server \x1b[94mgithub\x1b[0m: environment variable \
+             \x1b[94mGITHUB_MCP_PAT\x1b[0m is not set"
+        );
+        assert_eq!(
+            render_diagnostic(Level::Warning, "stray ` here", true),
+            "\x1b[1;33mwarning:\x1b[0m stray ` here"
+        );
+    }
 }
