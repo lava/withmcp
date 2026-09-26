@@ -14,14 +14,31 @@ pub struct Profile {
     #[serde(default)]
     pub servers: BTreeMap<String, Entry>,
     #[serde(default)]
+    pub groups: BTreeMap<String, Group>,
+    #[serde(default)]
     pub paths: BTreeMap<String, Rule>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(try_from = "RawServer")]
 pub struct Entry {
-    pub enabled: bool,
+    /// `None` defers to the groups containing the server.
+    pub enabled: Option<bool>,
     pub server: Server,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Group {
+    pub servers: Vec<String>,
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+/// What a name on the command line or in a path rule refers to.
+pub enum Target<'a> {
+    Server,
+    Group(&'a [String]),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +68,7 @@ pub struct OAuth {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawServer {
-    #[serde(default = "default_true")]
-    enabled: bool,
+    enabled: Option<bool>,
     command: Option<String>,
     #[serde(default)]
     args: Vec<String>,
@@ -62,10 +78,6 @@ struct RawServer {
     #[serde(default)]
     headers: BTreeMap<String, String>,
     oauth: Option<OAuth>,
-}
-
-fn default_true() -> bool {
-    true
 }
 
 impl TryFrom<RawServer> for Entry {
@@ -133,6 +145,31 @@ impl Profile {
         Ok(profile)
     }
 
+    pub fn target(&self, name: &str) -> Option<Target<'_>> {
+        if self.servers.contains_key(name) {
+            Some(Target::Server)
+        } else {
+            self.groups.get(name).map(|g| Target::Group(&g.servers))
+        }
+    }
+
+    /// The enabled group containing `server` that its state comes from, when
+    /// the server has no `enabled` flag of its own.
+    pub fn enabling_group(&self, server: &str) -> Option<&str> {
+        self.groups
+            .iter()
+            .find(|(_, g)| g.enabled && g.servers.iter().any(|s| s == server))
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Whether `server` is on before path rules and the command line apply.
+    pub fn base_enabled(&self, server: &str) -> bool {
+        match self.servers[server].enabled {
+            Some(enabled) => enabled,
+            None => self.enabling_group(server).is_some(),
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         if let Some(prefix) = &self.prefix
             && !prefix.is_empty()
@@ -155,18 +192,31 @@ impl Profile {
                 }
             }
         }
+        for (name, group) in &self.groups {
+            if !is_bare_key(name) {
+                bail!("invalid group name `{name}`: use only letters, digits, `-` and `_`");
+            }
+            if self.servers.contains_key(name) {
+                bail!("`{name}` is both a server and a group");
+            }
+            for server in &group.servers {
+                if !self.servers.contains_key(server) {
+                    bail!("group `{name}`: unknown server `{server}`");
+                }
+            }
+        }
         for (path, rule) in &self.paths {
             let what = format!("path `{path}`");
             if !(path == "~" || path.starts_with("~/") || Path::new(path).is_absolute()) {
                 bail!("{what}: paths must be absolute or start with `~/`");
             }
-            for server in rule.enable.iter().chain(&rule.disable) {
-                if !self.servers.contains_key(server) {
-                    bail!("{what}: unknown server `{server}`");
+            for name in rule.enable.iter().chain(&rule.disable) {
+                if self.target(name).is_none() {
+                    bail!("{what}: unknown server or group `{name}`");
                 }
             }
-            if let Some(server) = rule.enable.iter().find(|s| rule.disable.contains(s)) {
-                bail!("{what}: server `{server}` is both enabled and disabled");
+            if let Some(name) = rule.enable.iter().find(|s| rule.disable.contains(s)) {
+                bail!("{what}: `{name}` is both enabled and disabled");
             }
         }
         Ok(())
@@ -245,8 +295,10 @@ mod tests {
             .collect();
         let profile = Profile::parse(&uncommented).unwrap();
         assert_eq!(profile.prefix.as_deref(), Some(""));
-        assert_eq!(profile.servers.len(), 3);
-        assert!(!profile.servers["playwright"].enabled);
+        assert_eq!(profile.servers.len(), 4);
+        assert_eq!(profile.servers["linear"].enabled, Some(true));
+        assert_eq!(profile.servers["slack"].enabled, None);
+        assert_eq!(profile.groups["devtools"].servers, ["playwright", "chrome"]);
         assert_eq!(profile.paths.len(), 2);
     }
 
@@ -265,9 +317,9 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert!(profile.servers["a"].enabled);
+        assert_eq!(profile.servers["a"].enabled, None);
         assert!(matches!(profile.servers["a"].server, Server::Stdio { .. }));
-        assert!(!profile.servers["b"].enabled);
+        assert_eq!(profile.servers["b"].enabled, Some(false));
         let Server::Http { oauth, .. } = &profile.servers["b"].server else {
             panic!("not an http server");
         };
@@ -295,12 +347,50 @@ mod tests {
     #[test]
     fn rejects_invalid_paths() {
         let servers = "[servers.a]\ncommand = \"x\"\n";
-        assert!(error(&format!("{servers}[paths.\"/p\"]\nenable = [\"b\"]")).contains("unknown server `b`"));
+        assert!(error(&format!("{servers}[paths.\"/p\"]\nenable = [\"b\"]")).contains("unknown server or group `b`"));
         assert!(
             error(&format!("{servers}[paths.\"/p\"]\nenable = [\"a\"]\ndisable = [\"a\"]"))
                 .contains("both enabled and disabled")
         );
         assert!(error(&format!("{servers}[paths.\"code\"]\nenable = [\"a\"]")).contains("must be absolute"));
+    }
+
+    #[test]
+    fn groups() {
+        let profile = Profile::parse(
+            r#"
+            [servers.a]
+            command = "x"
+            [servers.b]
+            command = "x"
+            enabled = false
+            [servers.c]
+            command = "x"
+            [groups.on]
+            servers = ["a", "b"]
+            enabled = true
+            [groups.off]
+            servers = ["c"]
+            [paths."/p"]
+            enable = ["off"]
+            "#,
+        )
+        .unwrap();
+        assert!(profile.base_enabled("a"));
+        assert_eq!(profile.enabling_group("a"), Some("on"));
+        assert!(!profile.base_enabled("b"), "the server flag wins over the group");
+        assert!(!profile.base_enabled("c"));
+        assert!(matches!(profile.target("off"), Some(Target::Group(g)) if g == ["c"]));
+        assert!(matches!(profile.target("a"), Some(Target::Server)));
+        assert!(profile.target("nope").is_none());
+    }
+
+    #[test]
+    fn rejects_invalid_groups() {
+        let servers = "[servers.a]\ncommand = \"x\"\n";
+        assert!(error(&format!("{servers}[groups.g]\nservers = [\"b\"]")).contains("group `g`: unknown server `b`"));
+        assert!(error(&format!("{servers}[groups.a]\nservers = []")).contains("both a server and a group"));
+        assert!(error(&format!("{servers}[groups.g]\nenabled = true")).contains("missing field `servers`"));
     }
 
     #[test]

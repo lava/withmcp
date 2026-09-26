@@ -8,28 +8,38 @@
 ## defaults to "<profile>_"; set it to "" to pass the plain names.
 # prefix = ""
 
-## Servers are on unless they have `enabled = false`.
+## Servers are off unless they, or a group containing them, have
+## `enabled = true`.
 # [servers.linear]
 # url = "https://mcp.linear.app/mcp"
+# enabled = true
 
 ## For servers without dynamic client registration, name the OAuth client
 ## of your own app. `callback_port` is only supported by Claude Code.
 # [servers.slack]
 # url = "https://mcp.slack.com/mcp"
 # oauth = { client_id = "1234567890.1234567890", callback_port = 3118 }
-# enabled = false
 
 # [servers.playwright]
 # command = "npx"
 # args = ["@playwright/mcp@latest"]
-# enabled = false
 ## Values may reference the launching shell's environment with ${VAR}.
 # env = { DEBUG = "${PLAYWRIGHT_DEBUG}" }
 
+# [servers.chrome]
+# command = "npx"
+# args = ["-y", "chrome-devtools-mcp@latest"]
+
+## Groups switch related servers together. A server's own `enabled` flag
+## takes precedence over its groups.
+# [groups.devtools]
+# servers = ["playwright", "chrome"]
+
 ## Path rules apply when the current directory is the path or below it.
-## More specific paths are applied last.
+## More specific paths are applied last; within a rule, groups are applied
+## before servers.
 # [paths."~/code/myproject"]
-# enable = ["playwright"]
+# enable = ["devtools"]
 
 # [paths."~/code/myproject/docs"]
-# disable = ["linear"]
+# disable = ["linear", "chrome"]

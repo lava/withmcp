@@ -50,7 +50,7 @@ fn run() -> Result<ExitCode> {
         Command::Edit => return edit(&Selection::new(&opts)?.path),
         Command::Pick => bail!("the picker is not implemented yet"),
         Command::Which(argv) => emit(&render_plan(&plan(&opts, argv)?))?,
-        Command::List => emit(&render_list(&plan(&opts, None)?))?,
+        Command::List => emit(&render_list(&plan(&opts, None)?, use_color()))?,
         Command::Toggle {
             enable,
             servers,
@@ -125,18 +125,6 @@ struct Borrowed {
     label: String,
     exposed: String,
     server: Server,
-}
-
-impl Plan {
-    /// Enabled servers by exposed name.
-    fn enabled(&self) -> Vec<(String, &Server)> {
-        let local = self.resolution.enabled().map(|name| {
-            let exposed = self.resolution.exposed_name(name);
-            (exposed, &self.profile.servers[name].server)
-        });
-        let borrowed = self.borrowed.iter().map(|b| (b.exposed.clone(), &b.server));
-        local.chain(borrowed).collect()
-    }
 }
 
 struct Target {
@@ -260,29 +248,33 @@ fn borrow(
             profiles.insert(other.to_string(), profile);
         }
         let profile = &profiles[other];
-        let entry = profile
-            .servers
-            .get(server)
-            .with_context(|| format!("`+{spec}`: profile `{other}` has no server `{server}`"))?;
-        let exposed = format!("{}{server}", resolve::prefix(other, profile)?);
-        if let Some(name) = resolution
-            .decisions
-            .keys()
-            .find(|name| resolution.exposed_name(name) == exposed)
-        {
-            bail!(
-                "`+{spec}` would be passed as `{exposed}`, like server `{name}` of profile `{}`",
-                selection.name
-            );
+        let members = match profile.target(server) {
+            Some(config::Target::Server) => vec![server.to_string()],
+            Some(config::Target::Group(members)) => members.to_vec(),
+            None => bail!("`+{spec}`: profile `{other}` has no server or group `{server}`"),
+        };
+        let prefix = resolve::prefix(other, profile)?;
+        for member in members {
+            let exposed = format!("{prefix}{member}");
+            if let Some(name) = resolution
+                .decisions
+                .keys()
+                .find(|name| resolution.exposed_name(name) == exposed)
+            {
+                bail!(
+                    "`+{spec}` would pass `{exposed}`, like server `{name}` of profile `{}`",
+                    selection.name
+                );
+            }
+            if borrowed.iter().any(|b| b.exposed == exposed) {
+                continue;
+            }
+            borrowed.push(Borrowed {
+                label: format!("{other}/{member}"),
+                exposed,
+                server: profile.servers[&member].server.clone(),
+            });
         }
-        if borrowed.iter().any(|b| b.exposed == exposed) {
-            continue;
-        }
-        borrowed.push(Borrowed {
-            label: spec.clone(),
-            exposed,
-            server: entry.server.clone(),
-        });
     }
     Ok(borrowed)
 }
@@ -360,34 +352,40 @@ fn client_secret(opts: &Options, server: &str) -> Result<()> {
     ))
 }
 
-fn toggle(opts: &Options, enable: bool, servers: &[String], scope: Scope) -> Result<()> {
+fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Result<()> {
     let selection = Selection::new(opts)?;
     let home = config::home_dir().ok();
     let shown = display(&selection.path, home.as_deref());
-    let (text, profile) = read_profile(&selection, home.as_deref())?;
+    let (text, mut profile) = read_profile(&selection, home.as_deref())?;
     let mut doc: toml_edit::DocumentMut = text.parse().with_context(|| format!("in {shown}"))?;
     let cwd = current_dir()?;
     let mut report = String::new();
-    for server in servers {
-        match update::toggle(&mut doc, &profile, server, enable, scope, &cwd, home.as_deref())? {
+    for name in names {
+        match update::toggle(&mut doc, &profile, name, enable, scope, &cwd, home.as_deref())? {
             update::Outcome::Changed(change) => outln!(report, "{change}"),
             update::Outcome::Unchanged(note) => outln!(report, "{note}"),
         }
+        // Later names may depend on this change, e.g. a group's flag.
+        profile = Profile::parse(&doc.to_string()).context("bug: the updated profile is invalid")?;
     }
     let updated_text = doc.to_string();
-    let updated = Profile::parse(&updated_text).context("bug: the updated profile is invalid")?;
+    let updated = profile;
     if updated_text != text {
         write_atomically(&selection.path, &updated_text).with_context(|| format!("writing {shown}"))?;
         outln!(report, "updated {shown}");
     }
     emit(&report)?;
     let resolution = resolve::resolve(&selection.name, &updated, &cwd, home.as_deref(), &[])?;
+    let servers = names.iter().flat_map(|name| match updated.target(name) {
+        Some(config::Target::Group(servers)) => servers.to_vec(),
+        _ => vec![name.clone()],
+    });
     for server in servers {
-        let decision = &resolution.decisions[server];
+        let decision = &resolution.decisions[&server];
         if decision.enabled != enable {
             let state = if decision.enabled { "enabled" } else { "disabled" };
             let hint = match (&decision.source, scope) {
-                (resolve::Source::Path(_), Scope::Global) => "; use `--scope project` to override it here",
+                (resolve::Source::Path { .. }, Scope::Global) => "; use `--scope project` to override it here",
                 _ => "",
             };
             eprintln!(
@@ -455,28 +453,41 @@ fn exec(mut command: std::process::Command) -> Result<ExitCode> {
     Ok(ExitCode::from(status.code().unwrap_or(1) as u8))
 }
 
-fn render_list(plan: &Plan) -> String {
+/// One line per server by its name in the profile (`<profile>/<name>` for
+/// borrowed ones), disabled ones marked `(not enabled)` and, with `color`,
+/// dimmed.
+fn render_list(plan: &Plan, color: bool) -> String {
+    let local = plan.resolution.decisions.iter().map(|(name, decision)| {
+        let server = &plan.profile.servers[name].server;
+        (decision.enabled, name.clone(), server)
+    });
+    let borrowed = plan.borrowed.iter().map(|b| (true, b.label.clone(), &b.server));
+    let rows: Vec<_> = local.chain(borrowed).collect();
+    let width = rows.iter().map(|(_, name, _)| name.len()).max().unwrap_or(0);
     let mut out = String::new();
-    let rows: Vec<_> = plan
-        .enabled()
-        .into_iter()
-        .map(|(exposed, server)| {
-            let summary = match server {
-                Server::Stdio { command, args, .. } => std::iter::once(command)
-                    .chain(args)
-                    .map(|w| shell_quote(w))
-                    .collect::<Vec<_>>()
-                    .join(" "),
-                Server::Http { url, .. } => url.clone(),
-            };
-            (exposed, summary)
-        })
-        .collect();
-    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
-    for (name, summary) in rows {
-        outln!(out, "{name:width$}  {summary}");
+    for (enabled, name, server) in rows {
+        let summary = match server {
+            Server::Stdio { command, args, .. } => std::iter::once(command)
+                .chain(args)
+                .map(|w| shell_quote(w))
+                .collect::<Vec<_>>()
+                .join(" "),
+            Server::Http { url, .. } => url.clone(),
+        };
+        let suffix = if enabled { "" } else { "  (not enabled)" };
+        let line = format!("{name:width$}  {summary}{suffix}");
+        if color && !enabled {
+            outln!(out, "\x1b[2m{line}\x1b[0m");
+        } else {
+            outln!(out, "{line}");
+        }
     }
     out
+}
+
+fn use_color() -> bool {
+    use std::io::IsTerminal;
+    std::io::stdout().is_terminal() && std::env::var_os("NO_COLOR").is_none_or(|v| v.is_empty())
 }
 
 fn render_plan(plan: &Plan) -> String {

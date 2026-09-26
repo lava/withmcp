@@ -5,12 +5,13 @@ Launch a coding-agent harness with a configurable set of extra MCP servers.
 ```sh
 withmcp claude --resume                  # servers from the `default` profile
 withmcp -p work +playwright -linear codex
+withmcp +devtools claude                 # a group of servers
 withmcp +work/slack claude               # one server from another profile
 WITHMCP_PROFILE=work withmcp claude
-withmcp list                             # servers enabled in the current directory
+withmcp list                             # servers in the current directory
 withmcp which claude                     # ...and why, plus what a launch would do
 withmcp -p work edit                     # open the profile in $VISUAL/$EDITOR
-withmcp disable linear                   # set `enabled = false` in the profile
+withmcp enable devtools                  # set `enabled = true` on the group
 withmcp enable --scope project playwright  # enable in a path rule for this dir
 withmcp -- edit                          # launch a harness called `edit`
 ```
@@ -38,25 +39,32 @@ login, separate from `linear` in other profiles. Set `prefix = ""` to pass the
 plain names. On the command line and in path rules, servers are referred to
 without the prefix.
 
-A server is on unless it has `enabled = false`. Later steps win:
+Groups (`[groups.<name>]` with `servers = [...]`) switch related servers
+together. Wherever a server name is accepted, a group name can be used
+instead; group and server names must differ.
 
-1. Each server's `enabled` flag.
+Servers and groups are off unless they have `enabled = true`. Later steps win:
+
+1. Each server's `enabled` flag; without one, the server is on if a group
+   containing it is enabled.
 2. Path rules (`[paths."<dir>"]`) matching the current directory, least
-   specific first.
-3. `+<server>`/`--enable <server>` and `-<server>`/`--disable <server>` on
-   the command line, in order. Use `--disable` for servers named `p`, `i`,
-   `h` or `V`, whose `-<server>` form is an option.
+   specific first. Within a rule, groups are applied before servers, so
+   `enable = ["devtools"]` with `disable = ["chrome"]` leaves `chrome` off.
+3. `+<name>`/`--enable <name>` and `-<name>`/`--disable <name>` on the command
+   line, in order. Use `--disable` for servers named `p`, `i`, `h` or `V`,
+   whose `-<name>` form is an option.
 
-`+<profile>/<server>` (or `--enable <profile>/<server>`) additionally enables a
-server of another profile for this run, regardless of that profile's
-`enabled` flags and path rules. It keeps that profile's prefix, so
+`+<profile>/<name>` (or `--enable <profile>/<name>`) additionally enables a
+server or group of another profile for this run, regardless of that
+profile's `enabled` flags and path rules. It keeps that profile's prefix, so
 `+work/slack` is passed as `work_slack` and shares its login and client
 secret with launches of the `work` profile.
 
 `withmcp enable` and `withmcp disable` edit the selected profile file and
 keep its comments and formatting. `--scope global` (the default) changes the
-server's `enabled` flag; `--scope project` adds the server to the `enable` or
-`disable` list of the path rule for the current directory. If a path rule
+`enabled` flag of the group, or of the server where its groups would not
+give the requested result anyway; `--scope project` adds the name to the
+`enable` or `disable` list of the path rule for the current directory. If a path rule
 still overrides the result in the current directory, withmcp warns about it.
 
 String values of servers may reference the environment with `${VAR}`.

@@ -29,8 +29,9 @@ Options:
   -h, --help              show this help
   -V, --version           show the version
 
-`list` prints the servers enabled in the current directory; `which` also
-shows why, and what a launch of <harness> would do.
+`list` prints the servers for the current directory, marking disabled ones
+as (not enabled); `which` also shows why, and what a launch of <harness> would do.
+Wherever a server name is accepted, a group name can be used instead.
 
 `enable` and `disable` change the selected profile file: `--scope global`
 (the default) sets the server's `enabled` flag, `--scope project` changes the

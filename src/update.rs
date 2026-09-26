@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use toml_edit::{Array, DocumentMut, Item, Table, TableLike, Value};
 
 use crate::cli::Scope;
-use crate::config::Profile;
+use crate::config::{Profile, Target};
 use crate::resolve::normalize;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -15,62 +15,88 @@ pub enum Outcome {
     Unchanged(String),
 }
 
-/// Applies `enable`/`disable` of `server` to `doc`, which must hold the same
-/// content as `profile`.
+/// Applies `enable`/`disable` of server or group `name` to `doc`, which must
+/// hold the same content as `profile`.
 pub fn toggle(
     doc: &mut DocumentMut,
     profile: &Profile,
-    server: &str,
+    name: &str,
     enable: bool,
     scope: Scope,
     cwd: &Path,
     home: Option<&Path>,
 ) -> Result<Outcome> {
-    if !profile.servers.contains_key(server) {
-        bail!("unknown server `{server}`");
-    }
+    let Some(target) = profile.target(name) else {
+        bail!("unknown server or group `{name}`");
+    };
     let verb = if enable { "enabled" } else { "disabled" };
+    let what = match target {
+        Target::Server => format!("`{name}`"),
+        Target::Group(_) => format!("group `{name}`"),
+    };
     Ok(match scope {
         Scope::Global => {
-            if set_flag(doc, server, enable)? {
-                Outcome::Changed(format!("{verb} `{server}` globally"))
+            let changed = match target {
+                Target::Server => set_server_flag(doc, profile, name, enable)?,
+                Target::Group(_) => set_group_flag(doc, name, enable)?,
+            };
+            if changed {
+                Outcome::Changed(format!("{verb} {what} globally"))
             } else {
-                Outcome::Unchanged(format!("`{server}` is already {verb} globally"))
+                Outcome::Unchanged(format!("{what} is already {verb} globally"))
             }
         }
         Scope::Project => {
             let key = cwd_key(profile, cwd, home)?;
             let (add, remove) = if enable { ("enable", "disable") } else { ("disable", "enable") };
             // Add first so a rule emptied by the removal is not dropped.
-            let added = add_to_rule(doc, &key, add, server)?;
-            let removed = remove_from_rule(doc, &key, remove, server)?;
+            let added = add_to_rule(doc, &key, add, name)?;
+            let removed = remove_from_rule(doc, &key, remove, name)?;
             if added || removed {
-                Outcome::Changed(format!("{verb} `{server}` for path `{key}`"))
+                Outcome::Changed(format!("{verb} {what} for path `{key}`"))
             } else {
-                Outcome::Unchanged(format!("`{server}` is already {verb} for path `{key}`"))
+                Outcome::Unchanged(format!("{what} is already {verb} for path `{key}`"))
             }
         }
     })
 }
 
-/// Sets the `enabled` flag of `server`, dropping the key when it would be the
-/// default. Returns whether anything changed.
-fn set_flag(doc: &mut DocumentMut, server: &str, enabled: bool) -> Result<bool> {
-    let table = doc
-        .get_mut("servers")
-        .and_then(|s| s.get_mut(server))
-        .and_then(Item::as_table_like_mut)
-        .with_context(|| format!("cannot find the table of server `{server}`"))?;
-    let current = table.get("enabled").and_then(Item::as_bool).unwrap_or(true);
+/// Makes `server` enabled or disabled before path rules apply. Its own flag
+/// is only written when its groups would not give the same result.
+fn set_server_flag(doc: &mut DocumentMut, profile: &Profile, server: &str, enabled: bool) -> Result<bool> {
+    if profile.base_enabled(server) == enabled {
+        return Ok(false);
+    }
+    let from_groups = profile.enabling_group(server).is_some();
+    let table = table_mut(doc, "servers", server)?;
+    if enabled == from_groups {
+        table.remove("enabled");
+    } else {
+        table.insert("enabled", toml_edit::value(enabled));
+    }
+    Ok(true)
+}
+
+/// Sets the `enabled` flag of group `group`, dropping it when false.
+fn set_group_flag(doc: &mut DocumentMut, group: &str, enabled: bool) -> Result<bool> {
+    let table = table_mut(doc, "groups", group)?;
+    let current = table.get("enabled").and_then(Item::as_bool).unwrap_or(false);
     if current == enabled {
         return Ok(false);
     }
     if enabled {
-        table.remove("enabled");
+        table.insert("enabled", toml_edit::value(true));
     } else {
-        table.insert("enabled", toml_edit::value(false));
+        table.remove("enabled");
     }
     Ok(true)
+}
+
+fn table_mut<'a>(doc: &'a mut DocumentMut, kind: &str, name: &str) -> Result<&'a mut dyn TableLike> {
+    doc.get_mut(kind)
+        .and_then(|t| t.get_mut(name))
+        .and_then(Item::as_table_like_mut)
+        .with_context(|| format!("cannot find the table `{kind}.{name}`"))
 }
 
 /// The key of the path rule for `cwd`: an existing key naming the same
@@ -155,10 +181,16 @@ mod tests {
     const PROFILE: &str = r#"# My work profile.
 [servers.linear] # the work account
 url = "https://mcp.linear.app/mcp"
+enabled = true
 
 [servers.playwright]
 command = "npx"
-enabled = false
+
+[servers.chrome]
+command = "npx"
+
+[groups.devtools]
+servers = ["playwright", "chrome"]
 
 [paths."~/code/web"]
 enable = ["playwright"]
@@ -166,11 +198,11 @@ enable = ["playwright"]
 
     /// Runs `toggle` in `cwd` (with `~` for the home directory) and returns
     /// the new document text and the outcome.
-    fn run(text: &str, server: &str, enable: bool, scope: Scope, cwd: &str) -> (String, Outcome) {
+    fn run(text: &str, name: &str, enable: bool, scope: Scope, cwd: &str) -> (String, Outcome) {
         let profile = Profile::parse(text).unwrap();
         let mut doc: DocumentMut = text.parse().unwrap();
         let cwd = cwd.replace('~', HOME);
-        let outcome = toggle(&mut doc, &profile, server, enable, scope, Path::new(&cwd), Some(Path::new(HOME)))
+        let outcome = toggle(&mut doc, &profile, name, enable, scope, Path::new(&cwd), Some(Path::new(HOME)))
             .unwrap();
         let text = doc.to_string();
         Profile::parse(&text).unwrap();
@@ -182,19 +214,43 @@ enable = ["playwright"]
     }
 
     #[test]
-    fn global_flag_keeps_formatting() {
+    fn server_flag_keeps_formatting() {
         let (text, outcome) = run(PROFILE, "linear", false, Scope::Global, "/");
         assert_eq!(outcome, changed("disabled `linear` globally"));
         assert!(text.starts_with("# My work profile.\n[servers.linear] # the work account\n"));
-        assert!(text.contains("url = \"https://mcp.linear.app/mcp\"\nenabled = false\n"));
+        assert!(!text.contains("enabled"), "false is the default");
 
         let (text, outcome) = run(PROFILE, "playwright", true, Scope::Global, "/");
         assert_eq!(outcome, changed("enabled `playwright` globally"));
-        assert!(!text.contains("enabled = false"));
+        assert!(text.contains("[servers.playwright]\ncommand = \"npx\"\nenabled = true\n"));
 
         let (text, outcome) = run(PROFILE, "linear", true, Scope::Global, "/");
         assert!(matches!(outcome, Outcome::Unchanged(_)));
         assert_eq!(text, PROFILE);
+    }
+
+    #[test]
+    fn server_flag_only_written_when_groups_disagree() {
+        let (text, _) = run(PROFILE, "devtools", true, Scope::Global, "/");
+        // chrome is now on via its group: disabling it needs an explicit flag...
+        let (text, outcome) = run(&text, "chrome", false, Scope::Global, "/");
+        assert_eq!(outcome, changed("disabled `chrome` globally"));
+        assert!(text.contains("[servers.chrome]\ncommand = \"npx\"\nenabled = false\n"));
+        // ...and enabling it again drops the flag.
+        let (text, _) = run(&text, "chrome", true, Scope::Global, "/");
+        assert!(text.contains("[servers.chrome]\ncommand = \"npx\"\n\n"));
+    }
+
+    #[test]
+    fn group_flag() {
+        let (text, outcome) = run(PROFILE, "devtools", true, Scope::Global, "/");
+        assert_eq!(outcome, changed("enabled group `devtools` globally"));
+        assert!(text.contains("servers = [\"playwright\", \"chrome\"]\nenabled = true\n"));
+        let (text, outcome) = run(&text, "devtools", false, Scope::Global, "/");
+        assert_eq!(outcome, changed("disabled group `devtools` globally"));
+        assert_eq!(text, PROFILE);
+        let (_, outcome) = run(PROFILE, "devtools", false, Scope::Global, "/");
+        assert!(matches!(outcome, Outcome::Unchanged(_)));
     }
 
     #[test]
@@ -203,9 +259,9 @@ enable = ["playwright"]
         assert_eq!(outcome, changed("disabled `playwright` for path `~/code/web`"));
         assert!(text.ends_with("[paths.\"~/code/web\"]\ndisable = [\"playwright\"]\n"));
 
-        let (text, outcome) = run(PROFILE, "linear", true, Scope::Project, "~/code/web");
-        assert_eq!(outcome, changed("enabled `linear` for path `~/code/web`"));
-        assert!(text.ends_with("enable = [\"playwright\", \"linear\"]\n"));
+        let (text, outcome) = run(PROFILE, "devtools", true, Scope::Project, "~/code/web");
+        assert_eq!(outcome, changed("enabled group `devtools` for path `~/code/web`"));
+        assert!(text.ends_with("enable = [\"playwright\", \"devtools\"]\n"));
 
         let (_, outcome) = run(PROFILE, "playwright", true, Scope::Project, "~/code/web");
         assert!(matches!(outcome, Outcome::Unchanged(_)));
@@ -228,10 +284,10 @@ enable = ["playwright"]
     }
 
     #[test]
-    fn unknown_server() {
+    fn unknown_name() {
         let profile = Profile::parse(PROFILE).unwrap();
         let mut doc: DocumentMut = PROFILE.parse().unwrap();
         let err = toggle(&mut doc, &profile, "nope", true, Scope::Global, Path::new("/"), None);
-        assert!(err.unwrap_err().to_string().contains("unknown server"));
+        assert!(err.unwrap_err().to_string().contains("unknown server or group"));
     }
 }

@@ -5,24 +5,38 @@ use std::path::{Path, PathBuf};
 use anyhow::{Result, bail};
 
 use crate::cli::Override;
-use crate::config::{Profile, is_bare_key};
+use crate::config::{Profile, Target, is_bare_key};
 
 pub const DEFAULT_PROFILE: &str = "default";
 
 /// Where the final on/off decision for a server came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
-    Profile,
-    Path(String),
-    Cli,
+    Unset,
+    Flag,
+    Group(String),
+    Path { path: String, group: Option<String> },
+    Cli { group: Option<String> },
 }
 
 impl fmt::Display for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let via = |f: &mut fmt::Formatter<'_>, group: &Option<String>| match group {
+            Some(group) => write!(f, " via group `{group}`"),
+            None => Ok(()),
+        };
         match self {
-            Source::Profile => write!(f, "profile"),
-            Source::Path(path) => write!(f, "path `{path}`"),
-            Source::Cli => write!(f, "command line"),
+            Source::Unset => write!(f, "off by default"),
+            Source::Flag => write!(f, "`enabled` flag"),
+            Source::Group(group) => write!(f, "group `{group}`"),
+            Source::Path { path, group } => {
+                write!(f, "path `{path}`")?;
+                via(f, group)
+            }
+            Source::Cli { group } => {
+                write!(f, "command line")?;
+                via(f, group)
+            }
         }
     }
 }
@@ -55,8 +69,10 @@ impl Resolution {
 }
 
 /// Decides which servers of profile `name` are enabled. Later steps win:
-/// 1. Each server's `enabled` flag.
-/// 2. Path rules matching `cwd`, least specific first.
+/// 1. Each server's `enabled` flag, else whether a group containing it is
+///    enabled.
+/// 2. Path rules matching `cwd`, least specific first; within a rule, groups
+///    before servers.
 /// 3. Command-line overrides, in order.
 pub fn resolve(
     name: &str,
@@ -69,9 +85,19 @@ pub fn resolve(
         .servers
         .iter()
         .map(|(server, entry)| {
-            let decision = Decision {
-                enabled: entry.enabled,
-                source: Source::Profile,
+            let decision = match (entry.enabled, profile.enabling_group(server)) {
+                (Some(enabled), _) => Decision {
+                    enabled,
+                    source: Source::Flag,
+                },
+                (None, Some(group)) => Decision {
+                    enabled: true,
+                    source: Source::Group(group.to_string()),
+                },
+                (None, None) => Decision {
+                    enabled: false,
+                    source: Source::Unset,
+                },
             };
             (server.clone(), decision)
         })
@@ -86,27 +112,61 @@ pub fn resolve(
     }
     matches.sort_by_key(|&(depth, ..)| depth);
     for (_, raw, rule) in matches {
-        let source = Source::Path(raw.clone());
-        for server in &rule.enable {
-            set(&mut decisions, server, true, &source)?;
-        }
-        for server in &rule.disable {
-            set(&mut decisions, server, false, &source)?;
+        let source = |group: Option<&str>| Source::Path {
+            path: raw.clone(),
+            group: group.map(String::from),
+        };
+        let is_group = |name: &&String| profile.groups.contains_key(name.as_str());
+        for groups_first in [true, false] {
+            for name in rule.enable.iter().filter(|n| is_group(n) == groups_first) {
+                apply(&mut decisions, profile, name, true, &source)?;
+            }
+            for name in rule.disable.iter().filter(|n| is_group(n) == groups_first) {
+                apply(&mut decisions, profile, name, false, &source)?;
+            }
         }
     }
 
     for o in overrides {
-        let (server, enabled) = match o {
-            Override::Enable(server) => (server, true),
-            Override::Disable(server) => (server, false),
+        let (name, enabled) = match o {
+            Override::Enable(name) => (name, true),
+            Override::Disable(name) => (name, false),
         };
-        set(&mut decisions, server, enabled, &Source::Cli)?;
+        let source = |group: Option<&str>| Source::Cli {
+            group: group.map(String::from),
+        };
+        apply(&mut decisions, profile, name, enabled, &source)?;
     }
 
     Ok(Resolution {
         prefix: prefix(name, profile)?,
         decisions,
     })
+}
+
+/// Sets server `name`, or every server of group `name`.
+fn apply(
+    decisions: &mut BTreeMap<String, Decision>,
+    profile: &Profile,
+    name: &str,
+    enabled: bool,
+    source: &dyn Fn(Option<&str>) -> Source,
+) -> Result<()> {
+    let (servers, group) = match profile.target(name) {
+        Some(Target::Server) => (vec![name.to_string()], None),
+        Some(Target::Group(servers)) => (servers.to_vec(), Some(name)),
+        None => bail!("unknown server or group `{name}`"),
+    };
+    for server in servers {
+        decisions.insert(
+            server,
+            Decision {
+                enabled,
+                source: source(group),
+            },
+        );
+    }
+    Ok(())
 }
 
 /// The prefix of server names of profile `name` passed to the harness.
@@ -116,22 +176,6 @@ pub fn prefix(name: &str, profile: &Profile) -> Result<String> {
         None if is_bare_key(name) => Ok(format!("{name}_")),
         None => bail!("cannot derive a server name prefix from profile name `{name}`; set `prefix`"),
     }
-}
-
-fn set(
-    decisions: &mut BTreeMap<String, Decision>,
-    server: &str,
-    enabled: bool,
-    source: &Source,
-) -> Result<()> {
-    let Some(decision) = decisions.get_mut(server) else {
-        bail!("unknown server `{server}`");
-    };
-    *decision = Decision {
-        enabled,
-        source: source.clone(),
-    };
-    Ok(())
 }
 
 pub fn normalize(raw: &str, home: Option<&Path>) -> Result<PathBuf> {
@@ -161,18 +205,28 @@ mod tests {
             r#"
             [servers.github]
             url = "https://example.com/gh"
+            enabled = true
             [servers.linear]
             url = "https://example.com/linear"
-            enabled = false
             [servers.playwright]
+            command = "npx"
+            [servers.chrome]
+            command = "npx"
+            [servers.pinned]
             command = "npx"
             enabled = false
 
+            [groups.devtools]
+            servers = ["playwright", "chrome"]
+            [groups.always]
+            servers = ["linear", "pinned"]
+            enabled = true
+
             [paths."~/code/tenzir"]
-            enable = ["linear"]
-            [paths."~/code/tenzir/docs"]
-            enable = ["playwright"]
             disable = ["linear"]
+            [paths."~/code/tenzir/docs"]
+            enable = ["linear", "devtools"]
+            disable = ["chrome"]
             "#,
         )
         .unwrap()
@@ -189,39 +243,47 @@ mod tests {
     }
 
     #[test]
-    fn enabled_flags() {
+    fn flags_and_groups() {
         let r = run("/elsewhere", &[]).unwrap();
-        assert_eq!(state(&r, "github"), (true, "profile".into()));
-        assert_eq!(state(&r, "linear"), (false, "profile".into()));
-        assert_eq!(r.enabled().collect::<Vec<_>>(), ["github"]);
+        assert_eq!(state(&r, "github"), (true, "`enabled` flag".into()));
+        assert_eq!(state(&r, "linear"), (true, "group `always`".into()));
+        assert_eq!(state(&r, "pinned"), (false, "`enabled` flag".into()));
+        assert_eq!(state(&r, "playwright"), (false, "off by default".into()));
+        assert_eq!(r.enabled().collect::<Vec<_>>(), ["github", "linear"]);
     }
 
     #[test]
-    fn deeper_paths_win() {
+    fn deeper_paths_win_and_servers_beat_groups_in_a_rule() {
         let r = run("~/code/tenzir", &[]).unwrap();
-        assert_eq!(state(&r, "linear"), (true, "path `~/code/tenzir`".into()));
+        assert_eq!(state(&r, "linear"), (false, "path `~/code/tenzir`".into()));
         let r = run("~/code/tenzir/docs/src", &[]).unwrap();
-        assert_eq!(state(&r, "linear"), (false, "path `~/code/tenzir/docs`".into()));
-        assert_eq!(state(&r, "playwright"), (true, "path `~/code/tenzir/docs`".into()));
+        assert_eq!(state(&r, "linear"), (true, "path `~/code/tenzir/docs`".into()));
+        assert_eq!(
+            state(&r, "playwright"),
+            (true, "path `~/code/tenzir/docs` via group `devtools`".into())
+        );
+        assert_eq!(state(&r, "chrome"), (false, "path `~/code/tenzir/docs`".into()));
     }
 
     #[test]
     fn paths_match_whole_components() {
         let r = run("~/code/tenzir-other", &[]).unwrap();
-        assert!(!state(&r, "linear").0);
+        assert!(state(&r, "linear").0);
     }
 
     #[test]
-    fn cli_overrides_win() {
+    fn cli_overrides_apply_in_order() {
         let overrides = [
             Override::Disable("github".into()),
-            Override::Enable("playwright".into()),
+            Override::Enable("devtools".into()),
+            Override::Disable("chrome".into()),
         ];
         let r = run("/elsewhere", &overrides).unwrap();
         assert_eq!(state(&r, "github"), (false, "command line".into()));
-        assert_eq!(state(&r, "playwright"), (true, "command line".into()));
+        assert_eq!(state(&r, "playwright"), (true, "command line via group `devtools`".into()));
+        assert_eq!(state(&r, "chrome"), (false, "command line".into()));
         let err = run("/", &[Override::Enable("nope".into())]).unwrap_err();
-        assert!(err.to_string().contains("unknown server `nope`"));
+        assert!(err.to_string().contains("unknown server or group `nope`"));
     }
 
     #[test]
