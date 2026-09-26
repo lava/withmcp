@@ -10,16 +10,29 @@ pub struct Locations {
     pub cwd: PathBuf,
     pub claude_config_dir: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
+    pub pi_agent_dir: Option<PathBuf>,
 }
 
 impl Locations {
     pub fn from_env(home: PathBuf, cwd: PathBuf) -> Self {
         let dir = |var| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
         Self {
-            home,
-            cwd,
             claude_config_dir: dir("CLAUDE_CONFIG_DIR"),
             codex_home: dir("CODEX_HOME"),
+            pi_agent_dir: dir("PI_CODING_AGENT_DIR").map(|d| match d.strip_prefix("~") {
+                Ok(rest) => home.join(rest),
+                Err(_) => d,
+            }),
+            home,
+            cwd,
+        }
+    }
+
+    /// `$PI_CODING_AGENT_DIR`, else `~/.pi/agent`.
+    pub fn pi_agent_dir(&self) -> PathBuf {
+        match &self.pi_agent_dir {
+            Some(dir) => dir.clone(),
+            None => self.home.join(".pi").join("agent"),
         }
     }
 }
@@ -116,6 +129,60 @@ pub fn scan_codex(loc: &Locations) -> Scan {
     scan
 }
 
+/// Pi, through the pi-mcp-adapter extension: the shared user-global files,
+/// the Pi agent dir, and `.mcp.json` and `.pi/mcp.json` in the current
+/// directory. Servers imported from other harnesses are not checked.
+pub fn scan_pi(loc: &Locations) -> Scan {
+    let mut scan = Scan::default();
+    let paths = [
+        loc.home.join(".config/mcp/mcp.json"),
+        loc.home.join(".agents/mcp.json"),
+        loc.home.join(".agents/mcp/mcp.json"),
+        loc.pi_agent_dir().join("mcp.json"),
+        loc.cwd.join(".mcp.json"),
+        loc.cwd.join(".pi/mcp.json"),
+    ];
+    for path in paths {
+        if scan.checked.contains(&path) {
+            continue;
+        }
+        if let Some(json) = scan.read_json(&path) {
+            scan.add(&path, keys(pi_servers(&json)));
+        }
+    }
+    scan
+}
+
+/// The adapter also accepts `mcp-servers`, but only without `mcpServers`.
+pub fn pi_servers(json: &Value) -> &Value {
+    match json.get("mcpServers") {
+        Some(servers) => servers,
+        None => &json["mcp-servers"],
+    }
+}
+
+/// Whether Pi settings or extension directories mention pi-mcp-adapter.
+pub fn pi_has_mcp_adapter(loc: &Locations) -> bool {
+    const NAME: &str = "pi-mcp-adapter";
+    let dirs = [loc.pi_agent_dir(), loc.cwd.join(".pi")];
+    dirs.iter().any(|dir| {
+        let settings = std::fs::read_to_string(dir.join("settings.json"))
+            .ok()
+            .and_then(|text| serde_json::from_str::<Value>(&text).ok());
+        let listed = settings.is_some_and(|settings| {
+            ["packages", "extensions"].iter().any(|key| {
+                settings[key].as_array().into_iter().flatten().any(|entry| {
+                    entry
+                        .as_str()
+                        .or_else(|| entry["source"].as_str())
+                        .is_some_and(|source| source.contains(NAME))
+                })
+            })
+        });
+        listed || dir.join("extensions").join(NAME).exists()
+    })
+}
+
 fn keys(value: &Value) -> impl Iterator<Item = &String> {
     value.as_object().into_iter().flat_map(|o| o.keys())
 }
@@ -160,6 +227,7 @@ mod tests {
             cwd,
             claude_config_dir: None,
             codex_home: None,
+            pi_agent_dir: None,
         };
         let scan = scan_claude(&loc);
         assert_eq!(names(&scan), ["local", "shared", "user"]);
@@ -179,6 +247,7 @@ mod tests {
             cwd: cwd.clone(),
             claude_config_dir: None,
             codex_home: None,
+            pi_agent_dir: None,
         };
         assert_eq!(names(&scan_codex(&loc)), ["project", "user"]);
 
@@ -186,5 +255,34 @@ mod tests {
         let scan = scan_codex(&loc);
         assert_eq!(names(&scan), ["user"]);
         assert_eq!(scan.warnings.len(), 1);
+    }
+
+    #[test]
+    fn pi_sources() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let cwd = home.join("code/p");
+        let agent = tmp.path().join("agent");
+        write(&home.join(".config/mcp/mcp.json"), r#"{"mcpServers": {"shared": {}}}"#);
+        write(&agent.join("mcp.json"), r#"{"mcp-servers": {"pi": {}}}"#);
+        write(&cwd.join(".pi/mcp.json"), r#"{"mcpServers": {"project": {}}}"#);
+        write(&home.join("code/.mcp.json"), r#"{"mcpServers": {"parent": {}}}"#);
+        let mut loc = Locations {
+            home: home.clone(),
+            cwd: cwd.clone(),
+            claude_config_dir: None,
+            codex_home: None,
+            pi_agent_dir: Some(agent.clone()),
+        };
+        let scan = scan_pi(&loc);
+        assert_eq!(names(&scan), ["pi", "project", "shared"]);
+        assert!(!pi_has_mcp_adapter(&loc));
+
+        write(&agent.join("settings.json"), r#"{"packages": [{"source": "npm:pi-mcp-adapter"}]}"#);
+        assert!(pi_has_mcp_adapter(&loc));
+        loc.pi_agent_dir = None;
+        assert!(!pi_has_mcp_adapter(&loc));
+        std::fs::create_dir_all(cwd.join(".pi/extensions/pi-mcp-adapter")).unwrap();
+        assert!(pi_has_mcp_adapter(&loc));
     }
 }

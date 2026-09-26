@@ -48,7 +48,7 @@ $WITHMCP_CONFIG_DIR); `edit` opens the selected one.
 Everything after <harness> is passed to the harness unchanged. Use `--` to
 launch a harness whose name clashes with a subcommand.
 
-Supported harnesses: claude, codex
+Supported harnesses: claude, codex, pi
 ";
 
 #[derive(Debug, Default, PartialEq, Eq)]

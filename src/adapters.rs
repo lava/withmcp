@@ -15,6 +15,7 @@ use crate::native::{self, Locations, Scan};
 pub enum Harness {
     Claude,
     Codex,
+    Pi,
 }
 
 /// Arguments to insert right after the harness program, plus files they
@@ -23,6 +24,7 @@ pub enum Harness {
 pub struct Prepared {
     pub args: Vec<OsString>,
     pub files: Vec<(PathBuf, Vec<u8>)>,
+    pub warnings: Vec<String>,
 }
 
 impl Harness {
@@ -31,8 +33,9 @@ impl Harness {
         match name {
             Some("claude") => Ok(Harness::Claude),
             Some("codex") => Ok(Harness::Codex),
+            Some("pi") => Ok(Harness::Pi),
             _ => bail!(
-                "unsupported harness `{}` (supported: claude, codex)",
+                "unsupported harness `{}` (supported: claude, codex, pi)",
                 program.to_string_lossy()
             ),
         }
@@ -42,6 +45,7 @@ impl Harness {
         match self {
             Harness::Claude => "claude",
             Harness::Codex => "codex",
+            Harness::Pi => "pi",
         }
     }
 
@@ -49,30 +53,52 @@ impl Harness {
         match self {
             Harness::Claude => native::scan_claude(loc),
             Harness::Codex => native::scan_codex(loc),
+            Harness::Pi => native::scan_pi(loc),
         }
     }
 
-    pub fn prepare(self, servers: &BTreeMap<String, Server>, runtime_dir: &Path) -> Result<Prepared> {
+    pub fn prepare(
+        self,
+        servers: &BTreeMap<String, Server>,
+        loc: &Locations,
+        runtime_dir: &Path,
+    ) -> Result<Prepared> {
         if servers.is_empty() {
             return Ok(Prepared::default());
         }
         Ok(match self {
-            Harness::Claude => {
-                let bytes = serde_json::to_vec_pretty(&claude_config(servers))?;
-                let mut hasher = std::hash::DefaultHasher::new();
-                bytes.hash(&mut hasher);
-                let path = runtime_dir.join(format!("claude-{:016x}.json", hasher.finish()));
-                Prepared {
-                    args: vec!["--mcp-config".into(), path.clone().into()],
-                    files: vec![(path, bytes)],
-                }
-            }
+            Harness::Claude => config_file(runtime_dir, "claude", &claude_config(servers))?,
             Harness::Codex => Prepared {
                 args: codex_args(servers),
-                files: Vec::new(),
+                ..Prepared::default()
             },
+            Harness::Pi => {
+                let mut prepared = config_file(runtime_dir, "pi", &pi_config(servers, loc)?)?;
+                if !native::pi_has_mcp_adapter(loc) {
+                    prepared.warnings.push(
+                        "pi-mcp-adapter does not seem to be installed, and pi needs it for MCP \
+                         servers (`pi install npm:pi-mcp-adapter`)"
+                            .into(),
+                    );
+                }
+                prepared
+            }
         })
     }
+}
+
+/// A generated config file named after its contents, passed with
+/// `--mcp-config`.
+fn config_file(runtime_dir: &Path, stem: &str, config: &serde_json::Value) -> Result<Prepared> {
+    let bytes = serde_json::to_vec_pretty(config)?;
+    let mut hasher = std::hash::DefaultHasher::new();
+    bytes.hash(&mut hasher);
+    let path = runtime_dir.join(format!("{stem}-{:016x}.json", hasher.finish()));
+    Ok(Prepared {
+        args: vec!["--mcp-config".into(), path.clone().into()],
+        files: vec![(path, bytes)],
+        ..Prepared::default()
+    })
 }
 
 impl Prepared {
@@ -115,6 +141,51 @@ fn claude_config(servers: &BTreeMap<String, Server>) -> serde_json::Value {
         })
         .collect();
     json!({ "mcpServers": servers })
+}
+
+/// pi-mcp-adapter's `--mcp-config` replaces the Pi agent dir's `mcp.json`
+/// instead of adding to it, so the servers are merged into a copy of that
+/// file. Names it already defines were filtered out as collisions.
+fn pi_config(servers: &BTreeMap<String, Server>, loc: &Locations) -> Result<serde_json::Value> {
+    let base = loc.pi_agent_dir().join("mcp.json");
+    let mut config = match std::fs::read_to_string(&base) {
+        Ok(text) => serde_json::from_str(&text)
+            .with_context(|| format!("cannot merge the servers into {}", base.display()))?,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => json!({}),
+        Err(err) => return Err(err).with_context(|| format!("reading {}", base.display())),
+    };
+    let Some(object) = config.as_object_mut() else {
+        bail!("cannot merge the servers into {}: not a JSON object", base.display());
+    };
+    let key = if object.contains_key("mcp-servers") && !object.contains_key("mcpServers") {
+        "mcp-servers"
+    } else {
+        "mcpServers"
+    };
+    let Some(existing) = object.entry(key).or_insert_with(|| json!({})).as_object_mut() else {
+        bail!("cannot merge the servers into {}: `{key}` is not an object", base.display());
+    };
+    for (name, server) in servers {
+        let value = match server {
+            Server::Stdio { command, args, env } => {
+                json!({ "command": command, "args": args, "env": env })
+            }
+            Server::Http { url, headers, oauth } => {
+                let mut value = json!({ "url": url, "headers": headers });
+                if let Some(oauth) = oauth {
+                    let mut config = json!({ "clientId": oauth.client_id });
+                    if let Some(port) = oauth.callback_port {
+                        config["redirectUri"] = format!("http://localhost:{port}/callback").into();
+                    }
+                    value["auth"] = "oauth".into();
+                    value["oauth"] = config;
+                }
+                value
+            }
+        };
+        existing.insert(name.clone(), value);
+    }
+    Ok(config)
 }
 
 /// Server names and env/header keys are validated as TOML bare keys, so they
@@ -220,16 +291,27 @@ mod tests {
         .collect()
     }
 
+    fn locations(home: &Path) -> Locations {
+        Locations {
+            home: home.to_path_buf(),
+            cwd: home.to_path_buf(),
+            claude_config_dir: None,
+            codex_home: None,
+            pi_agent_dir: None,
+        }
+    }
+
     #[test]
     fn detect() {
         assert_eq!(Harness::detect(OsStr::new("/usr/bin/claude")).unwrap(), Harness::Claude);
         assert_eq!(Harness::detect(OsStr::new("codex")).unwrap(), Harness::Codex);
+        assert_eq!(Harness::detect(OsStr::new("pi")).unwrap(), Harness::Pi);
         assert!(Harness::detect(OsStr::new("edit")).is_err());
     }
 
     #[test]
     fn claude_writes_config_file() {
-        let prepared = Harness::Claude.prepare(&servers(), Path::new("/run")).unwrap();
+        let prepared = Harness::Claude.prepare(&servers(), &locations(Path::new("/nonexistent")), Path::new("/run")).unwrap();
         let (path, bytes) = &prepared.files[0];
         assert_eq!(prepared.args, [OsString::from("--mcp-config"), path.clone().into()]);
         let json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
@@ -255,7 +337,7 @@ mod tests {
 
     #[test]
     fn codex_uses_config_overrides() {
-        let prepared = Harness::Codex.prepare(&servers(), Path::new("/run")).unwrap();
+        let prepared = Harness::Codex.prepare(&servers(), &locations(Path::new("/nonexistent")), Path::new("/run")).unwrap();
         let args: Vec<_> = prepared.args.iter().map(|a| a.to_str().unwrap()).collect();
         assert_eq!(
             args,
@@ -281,7 +363,7 @@ mod tests {
 
     #[test]
     fn no_servers_no_args() {
-        let prepared = Harness::Claude.prepare(&BTreeMap::new(), Path::new("/run")).unwrap();
+        let prepared = Harness::Claude.prepare(&BTreeMap::new(), &locations(Path::new("/nonexistent")), Path::new("/run")).unwrap();
         assert!(prepared.args.is_empty() && prepared.files.is_empty());
     }
 
@@ -289,9 +371,59 @@ mod tests {
     fn write_files_is_idempotent() {
         let tmp = tempfile::tempdir().unwrap();
         let dir = tmp.path().join("rt");
-        let prepared = Harness::Claude.prepare(&servers(), &dir).unwrap();
+        let prepared = Harness::Claude.prepare(&servers(), &locations(tmp.path()), &dir).unwrap();
         prepared.write_files().unwrap();
         prepared.write_files().unwrap();
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn pi_merges_into_agent_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let loc = locations(tmp.path());
+        let agent = loc.pi_agent_dir();
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("mcp.json"),
+            r#"{"settings": {"directTools": true}, "mcpServers": {"own": {"command": "x"}}}"#,
+        )
+        .unwrap();
+        let prepared = Harness::Pi.prepare(&servers(), &loc, Path::new("/run")).unwrap();
+        let (path, bytes) = &prepared.files[0];
+        assert_eq!(prepared.args, [OsString::from("--mcp-config"), path.clone().into()]);
+        assert!(path.file_name().unwrap().to_str().unwrap().starts_with("pi-"));
+        assert_eq!(prepared.warnings.len(), 1);
+        let json: serde_json::Value = serde_json::from_slice(bytes).unwrap();
+        assert_eq!(
+            json,
+            json!({
+                "settings": { "directTools": true },
+                "mcpServers": {
+                    "own": { "command": "x" },
+                    "gh": { "url": "https://example.com/mcp", "headers": { "X-Api-Key": "k" } },
+                    "pw": {
+                        "command": "npx",
+                        "args": ["@playwright/mcp@latest", "--say \"hi\""],
+                        "env": { "DEBUG": "1" },
+                    },
+                    "slack": {
+                        "url": "https://mcp.slack.com/mcp",
+                        "headers": {},
+                        "auth": "oauth",
+                        "oauth": { "clientId": "cid", "redirectUri": "http://localhost:3118/callback" },
+                    },
+                },
+            })
+        );
+
+        std::fs::write(agent.join("settings.json"), r#"{"packages": ["npm:pi-mcp-adapter"]}"#).unwrap();
+        std::fs::write(agent.join("mcp.json"), r#"{"mcp-servers": {}}"#).unwrap();
+        let prepared = Harness::Pi.prepare(&servers(), &loc, Path::new("/run")).unwrap();
+        assert!(prepared.warnings.is_empty());
+        let json: serde_json::Value = serde_json::from_slice(&prepared.files[0].1).unwrap();
+        assert_eq!(json["mcp-servers"].as_object().unwrap().len(), 3);
+
+        std::fs::write(agent.join("mcp.json"), "not json").unwrap();
+        assert!(Harness::Pi.prepare(&servers(), &loc, Path::new("/run")).is_err());
     }
 }

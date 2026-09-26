@@ -130,6 +130,7 @@ struct Borrowed {
 struct Target {
     harness: Harness,
     argv: Vec<OsString>,
+    locations: Locations,
     scan: Scan,
     /// Enabled servers the harness already defines, by exposed name, with
     /// the defining file.
@@ -189,7 +190,8 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         Some(argv) => {
             let harness = Harness::detect(&argv[0])?;
             let home = home.clone().context("$HOME is not set")?;
-            let scan = harness.scan(&Locations::from_env(home, cwd.clone()));
+            let locations = Locations::from_env(home, cwd.clone());
+            let scan = harness.scan(&locations);
             let mut collisions = Vec::new();
             let mut servers = BTreeMap::new();
             let enabled = resolution.enabled().map(|name| {
@@ -208,6 +210,7 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             Some(Target {
                 harness,
                 argv,
+                locations,
                 scan,
                 collisions,
                 servers,
@@ -433,7 +436,12 @@ fn launch(plan: Plan) -> Result<ExitCode> {
             Ok((name.clone(), server))
         })
         .collect::<Result<_>>()?;
-    let prepared = target.harness.prepare(&servers, &adapters::runtime_dir())?;
+    let prepared = target
+        .harness
+        .prepare(&servers, &target.locations, &adapters::runtime_dir())?;
+    for warning in &prepared.warnings {
+        diagnose(Level::Warning, warning);
+    }
     prepared.write_files()?;
     let mut command = std::process::Command::new(&target.argv[0]);
     command.args(&prepared.args).args(&target.argv[1..]);
@@ -586,7 +594,10 @@ fn render_plan(plan: &Plan) -> String {
     // Built from unexpanded servers so secrets are not printed and no commands run.
     outln!(out);
     outln!(out, "command (before ${{VAR}} and $(command) expansion):");
-    match target.harness.prepare(&target.servers, &adapters::runtime_dir()) {
+    match target
+        .harness
+        .prepare(&target.servers, &target.locations, &adapters::runtime_dir())
+    {
         Ok(prepared) => {
             let words: Vec<_> = std::iter::once(&target.argv[0])
                 .chain(&prepared.args)
@@ -594,6 +605,9 @@ fn render_plan(plan: &Plan) -> String {
                 .map(|w| shell_quote(&w.to_string_lossy()))
                 .collect();
             outln!(out, "  {}", words.join(" "));
+            for warning in &prepared.warnings {
+                outln!(out, "  warning: {warning}");
+            }
         }
         Err(err) => outln!(out, "  error: {err:#}"),
     }

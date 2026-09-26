@@ -61,7 +61,7 @@ pub enum Server {
 #[serde(deny_unknown_fields)]
 pub struct OAuth {
     pub client_id: String,
-    /// Fixed port for the OAuth callback; only supported by Claude Code.
+    /// Fixed port for the OAuth callback; not supported by Codex.
     pub callback_port: Option<u16>,
 }
 

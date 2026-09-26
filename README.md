@@ -20,8 +20,13 @@ withmcp only adds servers. Servers the harness defines itself stay untouched.
 If one of those has the same name as an enabled withmcp server, withmcp prints
 a warning and leaves its own server out.
 
-Supported harnesses: `claude` (via `--mcp-config`) and `codex` (via `-c
-mcp_servers.*` overrides).
+Supported harnesses: `claude` (via `--mcp-config`), `codex` (via `-c
+mcp_servers.*` overrides) and `pi` (via `--mcp-config`). Pi needs the
+[pi-mcp-adapter](https://github.com/nicobailon/pi-mcp-adapter) extension
+(`pi install npm:pi-mcp-adapter`); withmcp warns if it cannot find it. The
+adapter's `--mcp-config` replaces `~/.pi/agent/mcp.json` (or
+`$PI_CODING_AGENT_DIR/mcp.json`), so withmcp passes a copy of that file with
+its servers added.
 
 ## Profiles
 
@@ -75,10 +80,12 @@ variables are not supported. The command must print exactly one line, which
 replaces the `$(...)`. Commands only run for servers that are enabled for the
 launch, and the values never enter the harness's environment, which makes
 `$(pass ...)` a way to keep secrets out of the profile.
-Authentication is left to the harness (e.g. `/mcp` in Claude Code or `codex
-mcp login`). For servers without dynamic client registration, such as Slack's,
-`oauth = { client_id = "...", callback_port = 3118 }` names a pre-registered
-OAuth client; Codex only receives `client_id`.
+Authentication is left to the harness (e.g. `/mcp` in Claude Code, `/mcp-auth
+<server>` in Pi or `codex mcp login`). For servers without dynamic client
+registration, such as Slack's, `oauth = { client_id = "...", callback_port =
+3118 }` names a pre-registered OAuth client; Codex only receives `client_id`,
+and Pi receives `callback_port` as `redirectUri =
+"http://localhost:<port>/callback"`.
 
 Claude Code only accepts an OAuth client secret when a server is added with
 `claude mcp add`. `withmcp [-p <profile>] clientsecret <server>` does that for
@@ -102,6 +109,10 @@ cargo build --release --target x86_64-unknown-linux-musl
   `$(command)` values are visible in the process list.
 - Detection of servers the harness already defines is best-effort. For
   example, Claude Code plugins and managed configs are not checked.
+- Pi uses a copy of its global `mcp.json` while withmcp runs, so changes
+  the adapter writes to that file during the session (e.g. from `/mcp setup`)
+  are lost. Servers pulled in through the file's `imports` are not checked
+  for collisions.
 - `list` does not check for collisions with a harness's own servers; use
   `which <harness>` for that.
 - `pick` and `-i` are not implemented yet.
