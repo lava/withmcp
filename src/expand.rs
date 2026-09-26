@@ -22,9 +22,15 @@ impl Sources<'_> {
 
 /// Runs `program` without a shell, capturing stdout and stderr.
 fn run(program: &str, args: &[&str]) -> Result<String> {
-    let output = match Command::new(program).args(args).stdin(Stdio::inherit()).output() {
+    let output = match Command::new(program)
+        .args(args)
+        .stdin(Stdio::inherit())
+        .output()
+    {
         Ok(output) => output,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => bail!("program `{program}` not found"),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            bail!("program `{program}` not found")
+        }
         Err(err) => return Err(err).with_context(|| format!("cannot run `{program}`")),
     };
     if !output.status.success() {
@@ -46,16 +52,26 @@ pub fn expand(input: &str, sources: &Sources) -> Result<String> {
     let mut rest = input;
     while let Some(start) = rest.find("${").into_iter().chain(rest.find("$(")).min() {
         out.push_str(&rest[..start]);
-        let (open, close) = if rest[start..].starts_with("${") { ("${", '}') } else { ("$(", ')') };
+        let (open, close) = if rest[start..].starts_with("${") {
+            ("${", '}')
+        } else {
+            ("$(", ')')
+        };
         let after = &rest[start + 2..];
         let Some(end) = after.find(close) else {
             bail!("unterminated `{open}` in `{input}`");
         };
         let inner = &after[..end];
         if close == '}' {
-            out.push_str(&(sources.var)(inner).with_context(|| format!("environment variable `{inner}` is not set"))?);
+            out.push_str(
+                &(sources.var)(inner)
+                    .with_context(|| format!("environment variable `{inner}` is not set"))?,
+            );
         } else {
-            out.push_str(&substitute(inner, sources).with_context(|| format!("command `{}`", inner.trim()))?);
+            out.push_str(
+                &substitute(inner, sources)
+                    .with_context(|| format!("command `{}`", inner.trim()))?,
+            );
         }
         rest = &after[end + 1..];
     }
@@ -89,10 +105,17 @@ pub fn expand_server(server: &Server, sources: &Sources) -> Result<Server> {
     Ok(match server {
         Server::Stdio { command, args, env } => Server::Stdio {
             command: expand(command, sources)?,
-            args: args.iter().map(|a| expand(a, sources)).collect::<Result<_>>()?,
+            args: args
+                .iter()
+                .map(|a| expand(a, sources))
+                .collect::<Result<_>>()?,
             env: map(env)?,
         },
-        Server::Http { url, headers, oauth } => Server::Http {
+        Server::Http {
+            url,
+            headers,
+            oauth,
+        } => Server::Http {
             url: expand(url, sources)?,
             headers: map(headers)?,
             oauth: match oauth {
@@ -124,7 +147,13 @@ mod tests {
     }
 
     fn expand(input: &str) -> Result<String> {
-        super::expand(input, &Sources { var: &var, run: &run })
+        super::expand(
+            input,
+            &Sources {
+                var: &var,
+                run: &run,
+            },
+        )
     }
 
     fn error(input: &str) -> String {
@@ -141,7 +170,10 @@ mod tests {
     #[test]
     fn expands_commands() {
         assert_eq!(expand("Bearer $( echo  a   b )").unwrap(), "Bearer a b");
-        assert_eq!(expand("$(echo ${TOKEN})-${TOKEN}").unwrap(), "${TOKEN}-secret");
+        assert_eq!(
+            expand("$(echo ${TOKEN})-${TOKEN}").unwrap(),
+            "${TOKEN}-secret"
+        );
         assert_eq!(expand("$(echo a)b)").unwrap(), "ab)");
     }
 
@@ -151,16 +183,25 @@ mod tests {
         assert!(expand("${TOKEN").is_err());
         assert_eq!(error("x $(echo"), "unterminated `$(` in `x $(echo`");
         assert_eq!(error("$( )"), "command ``: is empty");
-        assert_eq!(error("$(nope a)"), "command `nope a`: program `nope` not found");
+        assert_eq!(
+            error("$(nope a)"),
+            "command `nope a`: program `nope` not found"
+        );
         assert_eq!(error("$(silent)"), "command `silent`: printed nothing");
-        assert_eq!(error("$(lines)"), "command `lines`: printed more than one line");
+        assert_eq!(
+            error("$(lines)"),
+            "command `lines`: printed more than one line"
+        );
     }
 
     #[test]
     fn runs_programs() {
         assert_eq!(super::run("printf", &["x\\n"]).unwrap(), "x\n");
         assert_eq!(
-            format!("{:#}", super::run("withmcp-no-such-program", &[]).unwrap_err()),
+            format!(
+                "{:#}",
+                super::run("withmcp-no-such-program", &[]).unwrap_err()
+            ),
             "program `withmcp-no-such-program` not found"
         );
         let err = super::run("sh", &["-c", "echo oops >&2; exit 3"]).unwrap_err();

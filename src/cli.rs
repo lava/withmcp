@@ -178,8 +178,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                     && !v.is_empty()
                     && !v.starts_with('-')
                 {
-                    const LONG: [&str; 7] =
-                        ["help", "version", "profile", "enable", "disable", "config", "scope"];
+                    const LONG: [&str; 7] = [
+                        "help", "version", "profile", "enable", "disable", "config", "scope",
+                    ];
                     let name = v.split('=').next().unwrap_or(v);
                     if LONG.contains(&name) {
                         bail!("unknown option `{s}`; did you mean `-{s}`?");
@@ -275,13 +276,25 @@ mod tests {
     fn launch_passes_harness_args_through() {
         let (opts, cmd) = run(&["claude", "--resume", "-p", "+x"]).unwrap();
         assert_eq!(opts, Options::default());
-        assert_eq!(cmd, Command::Launch(argv(&["claude", "--resume", "-p", "+x"])));
+        assert_eq!(
+            cmd,
+            Command::Launch(argv(&["claude", "--resume", "-p", "+x"]))
+        );
     }
 
     #[test]
     fn options_before_harness() {
         let (opts, cmd) = run(&[
-            "-p", "work", "+gh", "-slack", "--enable=pw", "+home/x", "--disable", "p", "codex", "exec",
+            "-p",
+            "work",
+            "+gh",
+            "-slack",
+            "--enable=pw",
+            "+home/x",
+            "--disable",
+            "p",
+            "codex",
+            "exec",
         ])
         .unwrap();
         assert_eq!(opts.profile.as_deref(), Some("work"));
@@ -302,10 +315,16 @@ mod tests {
 
     #[test]
     fn double_dash_forces_harness() {
-        assert_eq!(run(&["--", "edit"]).unwrap().1, Command::Launch(argv(&["edit"])));
+        assert_eq!(
+            run(&["--", "edit"]).unwrap().1,
+            Command::Launch(argv(&["edit"]))
+        );
         assert_eq!(run(&["edit"]).unwrap().1, Command::Edit);
         assert_eq!(run(&["-p", "work", "list"]).unwrap().1, Command::List);
-        assert_eq!(run(&["--", "list"]).unwrap().1, Command::Launch(argv(&["list"])));
+        assert_eq!(
+            run(&["--", "list"]).unwrap().1,
+            Command::Launch(argv(&["list"]))
+        );
     }
 
     #[test]
@@ -314,7 +333,10 @@ mod tests {
         let (opts, cmd) = run(&["which", "-p", "work", "--", "claude"]).unwrap();
         assert_eq!(opts.profile.as_deref(), Some("work"));
         assert_eq!(cmd, Command::Which(Some(argv(&["claude"]))));
-        assert_eq!(run(&["which", "which"]).unwrap().1, Command::Which(Some(argv(&["which"]))));
+        assert_eq!(
+            run(&["which", "which"]).unwrap().1,
+            Command::Which(Some(argv(&["which"])))
+        );
     }
 
     #[test]
@@ -337,7 +359,10 @@ mod tests {
                 scope: Scope::Global,
             }
         );
-        assert_eq!(run(&["--", "enable"]).unwrap().1, Command::Launch(argv(&["enable"])));
+        assert_eq!(
+            run(&["--", "enable"]).unwrap().1,
+            Command::Launch(argv(&["enable"]))
+        );
         assert!(run(&["enable"]).is_err());
         assert!(run(&["enable", "--scope", "planet", "a"]).is_err());
         assert!(run(&["+x", "enable", "a"]).is_err());

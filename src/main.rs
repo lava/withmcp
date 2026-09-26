@@ -92,7 +92,9 @@ impl Selection {
                 origin: Origin::ConfigFlag,
             });
         }
-        let env = std::env::var("WITHMCP_PROFILE").ok().filter(|p| !p.is_empty());
+        let env = std::env::var("WITHMCP_PROFILE")
+            .ok()
+            .filter(|p| !p.is_empty());
         let (name, origin) = match (&opts.profile, env) {
             (Some(name), _) => (name.clone(), Origin::Flag),
             (None, Some(name)) => (name, Origin::Env),
@@ -172,13 +174,8 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             Override::Disable(_) => overrides.push(o.clone()),
         }
     }
-    let resolution = resolve::resolve(
-        &selection.name,
-        &profile,
-        &cwd,
-        home.as_deref(),
-        &overrides,
-    )?;
+    let resolution =
+        resolve::resolve(&selection.name, &profile, &cwd, home.as_deref(), &overrides)?;
     let borrowed = borrow(&requests, &resolution, &selection, home.as_deref())?;
     let target = match argv {
         None => None,
@@ -236,7 +233,8 @@ fn borrow(
     let mut borrowed: Vec<Borrowed> = Vec::new();
     for &(spec, other, server) in requests {
         if !profiles.contains_key(other) {
-            let path = config::profile_path(&config_dir, other).with_context(|| format!("`+{spec}`"))?;
+            let path =
+                config::profile_path(&config_dir, other).with_context(|| format!("`+{spec}`"))?;
             let Some(profile) = Profile::load(&path)? else {
                 bail!(
                     "`+{spec}`: profile `{other}` not found: {} does not exist",
@@ -302,7 +300,8 @@ fn client_secret(opts: &Options, server: &str) -> Result<()> {
         .servers
         .get(server)
         .with_context(|| format!("unknown server `{server}`"))?;
-    let expanded = expand::expand_server(&entry.server, &expand::Sources::system()).with_context(|| format!("server `{server}`"))?;
+    let expanded = expand::expand_server(&entry.server, &expand::Sources::system())
+        .with_context(|| format!("server `{server}`"))?;
     let Server::Http {
         url,
         oauth: Some(oauth),
@@ -358,17 +357,27 @@ fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Resul
     let cwd = current_dir()?;
     let mut report = String::new();
     for name in names {
-        match update::toggle(&mut doc, &profile, name, enable, scope, &cwd, home.as_deref())? {
+        match update::toggle(
+            &mut doc,
+            &profile,
+            name,
+            enable,
+            scope,
+            &cwd,
+            home.as_deref(),
+        )? {
             update::Outcome::Changed(change) => outln!(report, "{change}"),
             update::Outcome::Unchanged(note) => outln!(report, "{note}"),
         }
         // Later names may depend on this change, e.g. a group's flag.
-        profile = Profile::parse(&doc.to_string()).context("bug: the updated profile is invalid")?;
+        profile =
+            Profile::parse(&doc.to_string()).context("bug: the updated profile is invalid")?;
     }
     let updated_text = doc.to_string();
     let updated = profile;
     if updated_text != text {
-        write_atomically(&selection.path, &updated_text).with_context(|| format!("writing {shown}"))?;
+        write_atomically(&selection.path, &updated_text)
+            .with_context(|| format!("writing {shown}"))?;
         outln!(report, "updated {shown}");
     }
     emit(&report)?;
@@ -380,15 +389,24 @@ fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Resul
     for server in servers {
         let decision = &resolution.decisions[&server];
         if decision.enabled != enable {
-            let state = if decision.enabled { "enabled" } else { "disabled" };
+            let state = if decision.enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             let hint = match (&decision.source, scope) {
-                (resolve::Source::Path { .. }, Scope::Global) => "; use `--scope project` to override it here",
+                (resolve::Source::Path { .. }, Scope::Global) => {
+                    "; use `--scope project` to override it here"
+                }
                 (resolve::Source::Group(_), _) => "; disable the group or use `--scope project`",
                 _ => "",
             };
             diagnose(
                 Level::Warning,
-                &format!("`{server}` is still {state} here by {}{hint}", decision.source),
+                &format!(
+                    "`{server}` is still {state} here by {}{hint}",
+                    decision.source
+                ),
             );
         }
     }
@@ -467,9 +485,16 @@ fn render_list(plan: &Plan, color: bool) -> String {
         let server = &plan.profile.servers[name].server;
         (decision.enabled, name.clone(), server)
     });
-    let borrowed = plan.borrowed.iter().map(|b| (true, b.label.clone(), &b.server));
+    let borrowed = plan
+        .borrowed
+        .iter()
+        .map(|b| (true, b.label.clone(), &b.server));
     let rows: Vec<_> = local.chain(borrowed).collect();
-    let width = rows.iter().map(|(_, name, _)| name.len()).max().unwrap_or(0);
+    let width = rows
+        .iter()
+        .map(|(_, name, _)| name.len())
+        .max()
+        .unwrap_or(0);
     let mut out = String::new();
     for (enabled, name, server) in rows {
         let summary = match server {
@@ -519,7 +544,10 @@ enum Level {
 }
 
 fn diagnose(level: Level, message: &str) {
-    eprintln!("{}", render_diagnostic(level, message, color_on(&std::io::stderr())));
+    eprintln!(
+        "{}",
+        render_diagnostic(level, message, color_on(&std::io::stderr()))
+    );
 }
 
 /// Formats a message for stderr, dropping the backticks around `code`
@@ -566,7 +594,11 @@ fn render_plan(plan: &Plan) -> String {
         Origin::ConfigFlag => " (from --config)",
         Origin::Default | Origin::Flag => "",
     };
-    let missing = if plan.profile_exists { "" } else { " (does not exist)" };
+    let missing = if plan.profile_exists {
+        ""
+    } else {
+        " (does not exist)"
+    };
     outln!(out, "profile: {}{via}", selection.name);
     outln!(out, "file:    {}{missing}", display(&selection.path, home));
     outln!(out, "prefix:  {:?}", plan.resolution.prefix);
@@ -578,18 +610,29 @@ fn render_plan(plan: &Plan) -> String {
         .iter()
         .map(|(name, decision)| {
             let state = if decision.enabled { "on " } else { "off" };
-            (name.clone(), plan.resolution.exposed_name(name), state, decision.source.to_string())
+            (
+                name.clone(),
+                plan.resolution.exposed_name(name),
+                state,
+                decision.source.to_string(),
+            )
         })
-        .chain(
-            plan.borrowed
-                .iter()
-                .map(|b| (b.label.clone(), b.exposed.clone(), "on ", "command line".to_string())),
-        )
+        .chain(plan.borrowed.iter().map(|b| {
+            (
+                b.label.clone(),
+                b.exposed.clone(),
+                "on ",
+                "command line".to_string(),
+            )
+        }))
         .collect();
     let width = rows.iter().map(|(name, ..)| name.len()).max().unwrap_or(0);
     let exposed_width = rows.iter().map(|(_, e, ..)| e.len()).max().unwrap_or(0);
     for (name, exposed, state, source) in &rows {
-        outln!(out, "  {state}  {name:width$}  as {exposed:exposed_width$}  {source}");
+        outln!(
+            out,
+            "  {state}  {name:width$}  as {exposed:exposed_width$}  {source}"
+        );
     }
     let Some(target) = &plan.target else {
         return out;
@@ -606,7 +649,11 @@ fn render_plan(plan: &Plan) -> String {
         outln!(out, "  warning: {warning}");
     }
     for (name, path) in &target.collisions {
-        outln!(out, "  skipping `{name}`: already defined in {}", display(path, home));
+        outln!(
+            out,
+            "  skipping `{name}`: already defined in {}",
+            display(path, home)
+        );
     }
     // Built from unexpanded servers so secrets are not printed and no commands run.
     outln!(out);

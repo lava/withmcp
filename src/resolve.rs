@@ -174,7 +174,9 @@ pub fn prefix(name: &str, profile: &Profile) -> Result<String> {
     match &profile.prefix {
         Some(prefix) => Ok(prefix.clone()),
         None if is_bare_key(name) => Ok(format!("{name}_")),
-        None => bail!("cannot derive a server name prefix from profile name `{name}`; set `prefix`"),
+        None => {
+            bail!("cannot derive a server name prefix from profile name `{name}`; set `prefix`")
+        }
     }
 }
 
@@ -234,7 +236,13 @@ mod tests {
 
     fn run(cwd: &str, overrides: &[Override]) -> Result<Resolution> {
         let cwd = cwd.replace('~', HOME);
-        resolve("work", &profile(), Path::new(&cwd), Some(Path::new(HOME)), overrides)
+        resolve(
+            "work",
+            &profile(),
+            Path::new(&cwd),
+            Some(Path::new(HOME)),
+            overrides,
+        )
     }
 
     fn state(r: &Resolution, server: &str) -> (bool, String) {
@@ -247,9 +255,16 @@ mod tests {
         let r = run("/elsewhere", &[]).unwrap();
         assert_eq!(state(&r, "github"), (true, "`enabled` flag".into()));
         assert_eq!(state(&r, "linear"), (true, "group `always`".into()));
-        assert_eq!(state(&r, "pinned"), (true, "group `always`".into()), "groups win over `enabled = false`");
+        assert_eq!(
+            state(&r, "pinned"),
+            (true, "group `always`".into()),
+            "groups win over `enabled = false`"
+        );
         assert_eq!(state(&r, "playwright"), (false, "off by default".into()));
-        assert_eq!(r.enabled().collect::<Vec<_>>(), ["github", "linear", "pinned"]);
+        assert_eq!(
+            r.enabled().collect::<Vec<_>>(),
+            ["github", "linear", "pinned"]
+        );
     }
 
     #[test]
@@ -257,12 +272,18 @@ mod tests {
         let r = run("~/code/acme", &[]).unwrap();
         assert_eq!(state(&r, "linear"), (false, "path `~/code/acme`".into()));
         let r = run("~/code/acme/docs/src", &[]).unwrap();
-        assert_eq!(state(&r, "linear"), (true, "path `~/code/acme/docs`".into()));
+        assert_eq!(
+            state(&r, "linear"),
+            (true, "path `~/code/acme/docs`".into())
+        );
         assert_eq!(
             state(&r, "playwright"),
             (true, "path `~/code/acme/docs` via group `devtools`".into())
         );
-        assert_eq!(state(&r, "chrome"), (false, "path `~/code/acme/docs`".into()));
+        assert_eq!(
+            state(&r, "chrome"),
+            (false, "path `~/code/acme/docs`".into())
+        );
     }
 
     #[test]
@@ -280,7 +301,10 @@ mod tests {
         ];
         let r = run("/elsewhere", &overrides).unwrap();
         assert_eq!(state(&r, "github"), (false, "command line".into()));
-        assert_eq!(state(&r, "playwright"), (true, "command line via group `devtools`".into()));
+        assert_eq!(
+            state(&r, "playwright"),
+            (true, "command line via group `devtools`".into())
+        );
         assert_eq!(state(&r, "chrome"), (false, "command line".into()));
         let err = run("/", &[Override::Enable("nope".into())]).unwrap_err();
         assert!(err.to_string().contains("unknown server or group `nope`"));
@@ -295,6 +319,15 @@ mod tests {
         let r = resolve("work", &profile, Path::new("/"), Some(Path::new(HOME)), &[]).unwrap();
         assert_eq!(r.exposed_name("linear"), "linear");
         profile.prefix = None;
-        assert!(resolve("my.work", &profile, Path::new("/"), Some(Path::new(HOME)), &[]).is_err());
+        assert!(
+            resolve(
+                "my.work",
+                &profile,
+                Path::new("/"),
+                Some(Path::new(HOME)),
+                &[]
+            )
+            .is_err()
+        );
     }
 }

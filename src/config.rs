@@ -185,7 +185,9 @@ impl Profile {
             };
             for key in keys {
                 if !is_bare_key(key) {
-                    bail!("server `{name}`: invalid key `{key}`: use only letters, digits, `-` and `_`");
+                    bail!(
+                        "server `{name}`: invalid key `{key}`: use only letters, digits, `-` and `_`"
+                    );
                 }
             }
         }
@@ -222,8 +224,7 @@ impl Profile {
 
 pub fn is_bare_key(s: &str) -> bool {
     !s.is_empty()
-        && s
-            .chars()
+        && s.chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
@@ -336,8 +337,14 @@ mod tests {
         assert!(error("[servers.a]\ncommand = \"x\"\nurl = \"y\"").contains("not both"));
         assert!(error("[servers.a]\nargs = []").contains("either `command` or `url`"));
         assert!(error("[servers.a]\nurl = \"y\"\nenv = { K = \"v\" }").contains("only valid"));
-        assert!(error("[servers.a]\ncommand = \"x\"\noauth = { client_id = \"i\" }").contains("only valid"));
-        assert!(error("[servers.a]\nurl = \"y\"\noauth = { client_secret = \"s\" }").contains("unknown field"));
+        assert!(
+            error("[servers.a]\ncommand = \"x\"\noauth = { client_id = \"i\" }")
+                .contains("only valid")
+        );
+        assert!(
+            error("[servers.a]\nurl = \"y\"\noauth = { client_secret = \"s\" }")
+                .contains("unknown field")
+        );
         assert!(error("[servers.\"a.b\"]\ncommand = \"x\"").contains("invalid server name"));
         assert!(error("prefix = \"a.\"").contains("invalid prefix"));
         assert!(error("extends = \"x\"").contains("unknown field"));
@@ -346,12 +353,20 @@ mod tests {
     #[test]
     fn rejects_invalid_paths() {
         let servers = "[servers.a]\ncommand = \"x\"\n";
-        assert!(error(&format!("{servers}[paths.\"/p\"]\nenable = [\"b\"]")).contains("unknown server or group `b`"));
         assert!(
-            error(&format!("{servers}[paths.\"/p\"]\nenable = [\"a\"]\ndisable = [\"a\"]"))
-                .contains("both enabled and disabled")
+            error(&format!("{servers}[paths.\"/p\"]\nenable = [\"b\"]"))
+                .contains("unknown server or group `b`")
         );
-        assert!(error(&format!("{servers}[paths.\"code\"]\nenable = [\"a\"]")).contains("must be absolute"));
+        assert!(
+            error(&format!(
+                "{servers}[paths.\"/p\"]\nenable = [\"a\"]\ndisable = [\"a\"]"
+            ))
+            .contains("both enabled and disabled")
+        );
+        assert!(
+            error(&format!("{servers}[paths.\"code\"]\nenable = [\"a\"]"))
+                .contains("must be absolute")
+        );
     }
 
     #[test]
@@ -377,7 +392,10 @@ mod tests {
         .unwrap();
         assert!(profile.base_enabled("a"));
         assert_eq!(profile.enabling_group("a"), Some("on"));
-        assert!(profile.base_enabled("b"), "a group enables servers with `enabled = false`");
+        assert!(
+            profile.base_enabled("b"),
+            "a group enables servers with `enabled = false`"
+        );
         assert!(!profile.base_enabled("c"));
         assert!(matches!(profile.target("off"), Some(Target::Group(g)) if g == ["c"]));
         assert!(matches!(profile.target("a"), Some(Target::Server)));
@@ -387,15 +405,27 @@ mod tests {
     #[test]
     fn rejects_invalid_groups() {
         let servers = "[servers.a]\ncommand = \"x\"\n";
-        assert!(error(&format!("{servers}[groups.g]\nservers = [\"b\"]")).contains("group `g`: unknown server `b`"));
-        assert!(error(&format!("{servers}[groups.a]\nservers = []")).contains("both a server and a group"));
-        assert!(error(&format!("{servers}[groups.g]\nenabled = true")).contains("missing field `servers`"));
+        assert!(
+            error(&format!("{servers}[groups.g]\nservers = [\"b\"]"))
+                .contains("group `g`: unknown server `b`")
+        );
+        assert!(
+            error(&format!("{servers}[groups.a]\nservers = []"))
+                .contains("both a server and a group")
+        );
+        assert!(
+            error(&format!("{servers}[groups.g]\nenabled = true"))
+                .contains("missing field `servers`")
+        );
     }
 
     #[test]
     fn profile_paths() {
         let dir = Path::new("/cfg");
-        assert_eq!(profile_path(dir, "work").unwrap(), Path::new("/cfg/profiles/work.toml"));
+        assert_eq!(
+            profile_path(dir, "work").unwrap(),
+            Path::new("/cfg/profiles/work.toml")
+        );
         assert!(profile_path(dir, "../work").is_err());
         assert!(profile_path(dir, "").is_err());
     }

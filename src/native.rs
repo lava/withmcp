@@ -15,7 +15,11 @@ pub struct Locations {
 
 impl Locations {
     pub fn from_env(home: PathBuf, cwd: PathBuf) -> Self {
-        let dir = |var| std::env::var_os(var).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let dir = |var| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
         Self {
             claude_config_dir: dir("CLAUDE_CONFIG_DIR"),
             codex_home: dir("CODEX_HOME"),
@@ -63,7 +67,8 @@ impl Scan {
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
             Err(err) => {
-                self.warnings.push(format!("cannot read {}: {err}", path.display()));
+                self.warnings
+                    .push(format!("cannot read {}: {err}", path.display()));
                 None
             }
         }
@@ -72,14 +77,20 @@ impl Scan {
     fn read_json(&mut self, path: &Path) -> Option<Value> {
         let text = self.read(path)?;
         serde_json::from_str(&text)
-            .inspect_err(|err| self.warnings.push(format!("cannot parse {}: {err}", path.display())))
+            .inspect_err(|err| {
+                self.warnings
+                    .push(format!("cannot parse {}: {err}", path.display()))
+            })
             .ok()
     }
 
     fn read_toml(&mut self, path: &Path) -> Option<toml::Table> {
         let text = self.read(path)?;
         toml::from_str(&text)
-            .inspect_err(|err| self.warnings.push(format!("cannot parse {}: {err}", path.display())))
+            .inspect_err(|err| {
+                self.warnings
+                    .push(format!("cannot parse {}: {err}", path.display()))
+            })
             .ok()
     }
 }
@@ -221,7 +232,10 @@ mod tests {
             },
         });
         write(&home.join(".claude.json"), &claude_json.to_string());
-        write(&project.join(".mcp.json"), r#"{"mcpServers": {"shared": {}}}"#);
+        write(
+            &project.join(".mcp.json"),
+            r#"{"mcpServers": {"shared": {}}}"#,
+        );
         let loc = Locations {
             home: home.clone(),
             cwd,
@@ -240,8 +254,14 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path().join("home");
         let cwd = home.join("code/p");
-        write(&home.join(".codex/config.toml"), "[mcp_servers.user]\ncommand = \"x\"");
-        write(&cwd.join(".codex/config.toml"), "[mcp_servers.project]\ncommand = \"x\"");
+        write(
+            &home.join(".codex/config.toml"),
+            "[mcp_servers.user]\ncommand = \"x\"",
+        );
+        write(
+            &cwd.join(".codex/config.toml"),
+            "[mcp_servers.project]\ncommand = \"x\"",
+        );
         let loc = Locations {
             home: home.clone(),
             cwd: cwd.clone(),
@@ -263,10 +283,19 @@ mod tests {
         let home = tmp.path().join("home");
         let cwd = home.join("code/p");
         let agent = tmp.path().join("agent");
-        write(&home.join(".config/mcp/mcp.json"), r#"{"mcpServers": {"shared": {}}}"#);
+        write(
+            &home.join(".config/mcp/mcp.json"),
+            r#"{"mcpServers": {"shared": {}}}"#,
+        );
         write(&agent.join("mcp.json"), r#"{"mcp-servers": {"pi": {}}}"#);
-        write(&cwd.join(".pi/mcp.json"), r#"{"mcpServers": {"project": {}}}"#);
-        write(&home.join("code/.mcp.json"), r#"{"mcpServers": {"parent": {}}}"#);
+        write(
+            &cwd.join(".pi/mcp.json"),
+            r#"{"mcpServers": {"project": {}}}"#,
+        );
+        write(
+            &home.join("code/.mcp.json"),
+            r#"{"mcpServers": {"parent": {}}}"#,
+        );
         let mut loc = Locations {
             home: home.clone(),
             cwd: cwd.clone(),
@@ -278,7 +307,10 @@ mod tests {
         assert_eq!(names(&scan), ["pi", "project", "shared"]);
         assert!(!pi_has_mcp_adapter(&loc));
 
-        write(&agent.join("settings.json"), r#"{"packages": [{"source": "npm:pi-mcp-adapter"}]}"#);
+        write(
+            &agent.join("settings.json"),
+            r#"{"packages": [{"source": "npm:pi-mcp-adapter"}]}"#,
+        );
         assert!(pi_has_mcp_adapter(&loc));
         loc.pi_agent_dir = None;
         assert!(!pi_has_mcp_adapter(&loc));

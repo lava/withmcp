@@ -50,7 +50,11 @@ pub fn toggle(
         }
         Scope::Project => {
             let key = cwd_key(profile, cwd, home)?;
-            let (add, remove) = if enable { ("enable", "disable") } else { ("disable", "enable") };
+            let (add, remove) = if enable {
+                ("enable", "disable")
+            } else {
+                ("disable", "enable")
+            };
             // Add first so a rule emptied by the removal is not dropped.
             let added = add_to_rule(doc, &key, add, name)?;
             let removed = remove_from_rule(doc, &key, remove, name)?;
@@ -65,7 +69,12 @@ pub fn toggle(
 
 /// Sets or clears the `enabled` flag of `server`. The flag is not written
 /// when an enabled group already turns the server on.
-fn set_server_flag(doc: &mut DocumentMut, profile: &Profile, server: &str, enabled: bool) -> Result<bool> {
+fn set_server_flag(
+    doc: &mut DocumentMut,
+    profile: &Profile,
+    server: &str,
+    enabled: bool,
+) -> Result<bool> {
     let current = profile.servers[server].enabled;
     if current == enabled || (enabled && profile.base_enabled(server)) {
         return Ok(false);
@@ -82,7 +91,10 @@ fn set_server_flag(doc: &mut DocumentMut, profile: &Profile, server: &str, enabl
 /// Sets the `enabled` flag of group `group`, dropping it when false.
 fn set_group_flag(doc: &mut DocumentMut, group: &str, enabled: bool) -> Result<bool> {
     let table = table_mut(doc, "groups", group)?;
-    let current = table.get("enabled").and_then(Item::as_bool).unwrap_or(false);
+    let current = table
+        .get("enabled")
+        .and_then(Item::as_bool)
+        .unwrap_or(false);
     if current == enabled {
         return Ok(false);
     }
@@ -94,7 +106,11 @@ fn set_group_flag(doc: &mut DocumentMut, group: &str, enabled: bool) -> Result<b
     Ok(true)
 }
 
-fn table_mut<'a>(doc: &'a mut DocumentMut, kind: &str, name: &str) -> Result<&'a mut dyn TableLike> {
+fn table_mut<'a>(
+    doc: &'a mut DocumentMut,
+    kind: &str,
+    name: &str,
+) -> Result<&'a mut dyn TableLike> {
     doc.get_mut(kind)
         .and_then(|t| t.get_mut(name))
         .and_then(Item::as_table_like_mut)
@@ -204,8 +220,16 @@ enable = ["playwright"]
         let profile = Profile::parse(text).unwrap();
         let mut doc: DocumentMut = text.parse().unwrap();
         let cwd = cwd.replace('~', HOME);
-        let outcome = toggle(&mut doc, &profile, name, enable, scope, Path::new(&cwd), Some(Path::new(HOME)))
-            .unwrap();
+        let outcome = toggle(
+            &mut doc,
+            &profile,
+            name,
+            enable,
+            scope,
+            Path::new(&cwd),
+            Some(Path::new(HOME)),
+        )
+        .unwrap();
         let text = doc.to_string();
         Profile::parse(&text).unwrap();
         (text, outcome)
@@ -239,7 +263,10 @@ enable = ["playwright"]
         assert_eq!(after, text);
         // A group cannot be overridden by the server's own flag.
         let (after, outcome) = run(&text, "chrome", false, Scope::Global, "/");
-        assert_eq!(outcome, Outcome::Unchanged("`chrome` has no `enabled` flag to clear".into()));
+        assert_eq!(
+            outcome,
+            Outcome::Unchanged("`chrome` has no `enabled` flag to clear".into())
+        );
         assert_eq!(after, text);
     }
 
@@ -258,11 +285,17 @@ enable = ["playwright"]
     #[test]
     fn project_scope_reuses_existing_rule() {
         let (text, outcome) = run(PROFILE, "playwright", false, Scope::Project, "~/code/web");
-        assert_eq!(outcome, changed("disabled `playwright` for path `~/code/web`"));
+        assert_eq!(
+            outcome,
+            changed("disabled `playwright` for path `~/code/web`")
+        );
         assert!(text.ends_with("[paths.\"~/code/web\"]\ndisable = [\"playwright\"]\n"));
 
         let (text, outcome) = run(PROFILE, "devtools", true, Scope::Project, "~/code/web");
-        assert_eq!(outcome, changed("enabled group `devtools` for path `~/code/web`"));
+        assert_eq!(
+            outcome,
+            changed("enabled group `devtools` for path `~/code/web`")
+        );
         assert!(text.ends_with("enable = [\"playwright\", \"devtools\"]\n"));
 
         let (_, outcome) = run(PROFILE, "playwright", true, Scope::Project, "~/code/web");
@@ -274,22 +307,46 @@ enable = ["playwright"]
         let (text, _) = run(PROFILE, "linear", false, Scope::Project, "~/other");
         assert!(text.ends_with("[paths.\"~/other\"]\ndisable = [\"linear\"]\n"));
 
-        let (text, _) = run("[servers.a]\ncommand = \"x\"\n", "a", false, Scope::Project, "/srv");
-        assert_eq!(text, "[servers.a]\ncommand = \"x\"\n\n[paths.\"/srv\"]\ndisable = [\"a\"]\n");
+        let (text, _) = run(
+            "[servers.a]\ncommand = \"x\"\n",
+            "a",
+            false,
+            Scope::Project,
+            "/srv",
+        );
+        assert_eq!(
+            text,
+            "[servers.a]\ncommand = \"x\"\n\n[paths.\"/srv\"]\ndisable = [\"a\"]\n"
+        );
     }
 
     #[test]
     fn project_scope_drops_empty_rule() {
         let text = "[servers.a]\ncommand = \"x\"\n\n[paths.\"/srv\"]\ndisable = [\"a\"]\n";
         let (text, _) = run(text, "a", true, Scope::Project, "/srv");
-        assert_eq!(text, "[servers.a]\ncommand = \"x\"\n\n[paths.\"/srv\"]\nenable = [\"a\"]\n");
+        assert_eq!(
+            text,
+            "[servers.a]\ncommand = \"x\"\n\n[paths.\"/srv\"]\nenable = [\"a\"]\n"
+        );
     }
 
     #[test]
     fn unknown_name() {
         let profile = Profile::parse(PROFILE).unwrap();
         let mut doc: DocumentMut = PROFILE.parse().unwrap();
-        let err = toggle(&mut doc, &profile, "nope", true, Scope::Global, Path::new("/"), None);
-        assert!(err.unwrap_err().to_string().contains("unknown server or group"));
+        let err = toggle(
+            &mut doc,
+            &profile,
+            "nope",
+            true,
+            Scope::Global,
+            Path::new("/"),
+            None,
+        );
+        assert!(
+            err.unwrap_err()
+                .to_string()
+                .contains("unknown server or group")
+        );
     }
 }
