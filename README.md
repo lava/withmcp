@@ -4,6 +4,22 @@ withmcp is a tool for managing your system-wide collection of MCP servers,
 allowing easy toggling of individual servers or groups of them, globally or per
 project.
 
+```sh
+❯ withmcp
+Usage:
+  withmcp [options] [--] <harness> [args...]
+
+Configured Servers:
+  excalidraw  https://api.excalidraw.com/api/v1/mcp  (not enabled)
+  github      https://api.githubcopilot.com/mcp/  (not enabled)
+  linear      https://mcp.linear.app/mcp  (not enabled)
+  playwright  npx @playwright/mcp@latest  (not enabled)
+  slack       https://mcp.slack.com/mcp  (not enabled)
+
+
+❯ withmcp +linear claude   # launch claude with linear MCP enabled
+```
+
 Why would you want to do that? These were my motivating examples:
 
 * Found a cool server that has very specific use cases so you don't want it
@@ -44,26 +60,15 @@ Currently `claude`, `codex` and `pi` are supported.
 Run a one-off session with a given server enabled:
 
 ```sh
-❯ withmcp
-Usage:
-  withmcp [options] [--] <harness> [args...]
-
-Configured Servers:
-  excalidraw  https://api.excalidraw.com/api/v1/mcp  (not enabled)
-  github      https://api.githubcopilot.com/mcp/  (not enabled)
-  linear      https://mcp.linear.app/mcp  (not enabled)
-  playwright  npx @playwright/mcp@latest  (not enabled)
-  slack       https://mcp.slack.com/mcp  (not enabled)
-
-
 ❯ withmcp +linear claude
 ```
 
 Permanently enable it:
 ```sh
-❯ withmcp enable linear  # all withmcp sessions now have this
+❯ withmcp enable linear
 ```
 
+All sessions launched by `withmcp` will now have it.
 The inverse also works:
 
 ```sh
