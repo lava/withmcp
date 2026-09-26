@@ -52,7 +52,9 @@ still overrides the result in the current directory, withmcp warns about it.
 
 String values of servers may reference the environment with `${VAR}`.
 Authentication is left to the harness (e.g. `/mcp` in Claude Code or `codex
-mcp login`).
+mcp login`). For servers without dynamic client registration, such as Slack's,
+`oauth = { client_id = "...", callback_port = 3118 }` names a pre-registered
+OAuth client; Codex only receives `client_id`.
 
 ## Building
 

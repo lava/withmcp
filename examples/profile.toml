@@ -12,6 +12,13 @@
 # [servers.linear]
 # url = "https://mcp.linear.app/mcp"
 
+## For servers without dynamic client registration, name the OAuth client
+## of your own app. `callback_port` is only supported by Claude Code.
+# [servers.slack]
+# url = "https://mcp.slack.com/mcp"
+# oauth = { client_id = "1234567890.1234567890", callback_port = 3118 }
+# enabled = false
+
 # [servers.playwright]
 # command = "npx"
 # args = ["@playwright/mcp@latest"]

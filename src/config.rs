@@ -34,7 +34,18 @@ pub enum Server {
     Http {
         url: String,
         headers: BTreeMap<String, String>,
+        oauth: Option<OAuth>,
     },
+}
+
+/// A pre-registered OAuth client, for servers without dynamic client
+/// registration. The harness still runs the login.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OAuth {
+    pub client_id: String,
+    /// Fixed port for the OAuth callback; only supported by Claude Code.
+    pub callback_port: Option<u16>,
 }
 
 #[derive(Deserialize)]
@@ -50,6 +61,7 @@ struct RawServer {
     url: Option<String>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
+    oauth: Option<OAuth>,
 }
 
 fn default_true() -> bool {
@@ -62,8 +74,8 @@ impl TryFrom<RawServer> for Entry {
     fn try_from(raw: RawServer) -> Result<Self, String> {
         let server = match (raw.command, raw.url) {
             (Some(command), None) => {
-                if !raw.headers.is_empty() {
-                    return Err("`headers` is only valid for `url` servers".into());
+                if !raw.headers.is_empty() || raw.oauth.is_some() {
+                    return Err("`headers` and `oauth` are only valid for `url` servers".into());
                 }
                 Server::Stdio {
                     command,
@@ -78,6 +90,7 @@ impl TryFrom<RawServer> for Entry {
                 Server::Http {
                     url,
                     headers: raw.headers,
+                    oauth: raw.oauth,
                 }
             }
             (Some(_), Some(_)) => {
@@ -223,7 +236,7 @@ mod tests {
             .collect();
         let profile = Profile::parse(&uncommented).unwrap();
         assert_eq!(profile.prefix.as_deref(), Some(""));
-        assert_eq!(profile.servers.len(), 2);
+        assert_eq!(profile.servers.len(), 3);
         assert!(!profile.servers["playwright"].enabled);
         assert_eq!(profile.paths.len(), 2);
     }
@@ -239,13 +252,23 @@ mod tests {
             [servers.b]
             url = "https://example.com/mcp"
             enabled = false
+            oauth = { client_id = "id", callback_port = 3118 }
             "#,
         )
         .unwrap();
         assert!(profile.servers["a"].enabled);
         assert!(matches!(profile.servers["a"].server, Server::Stdio { .. }));
         assert!(!profile.servers["b"].enabled);
-        assert!(matches!(profile.servers["b"].server, Server::Http { .. }));
+        let Server::Http { oauth, .. } = &profile.servers["b"].server else {
+            panic!("not an http server");
+        };
+        assert_eq!(
+            oauth,
+            &Some(OAuth {
+                client_id: "id".into(),
+                callback_port: Some(3118),
+            })
+        );
     }
 
     #[test]
@@ -253,6 +276,8 @@ mod tests {
         assert!(error("[servers.a]\ncommand = \"x\"\nurl = \"y\"").contains("not both"));
         assert!(error("[servers.a]\nargs = []").contains("either `command` or `url`"));
         assert!(error("[servers.a]\nurl = \"y\"\nenv = { K = \"v\" }").contains("only valid"));
+        assert!(error("[servers.a]\ncommand = \"x\"\noauth = { client_id = \"i\" }").contains("only valid"));
+        assert!(error("[servers.a]\nurl = \"y\"\noauth = { client_secret = \"s\" }").contains("unknown field"));
         assert!(error("[servers.\"a.b\"]\ncommand = \"x\"").contains("invalid server name"));
         assert!(error("prefix = \"a.\"").contains("invalid prefix"));
         assert!(error("extends = \"x\"").contains("unknown field"));

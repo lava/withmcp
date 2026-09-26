@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, bail};
 
-use crate::config::Server;
+use crate::config::{OAuth, Server};
 
 /// Replaces every `${NAME}` in `input` with `lookup(NAME)`.
 pub fn expand(input: &str, lookup: &dyn Fn(&str) -> Option<String>) -> Result<String> {
@@ -34,9 +34,16 @@ pub fn expand_server(server: &Server, lookup: &dyn Fn(&str) -> Option<String>) -
             args: args.iter().map(|a| expand(a, lookup)).collect::<Result<_>>()?,
             env: map(env)?,
         },
-        Server::Http { url, headers } => Server::Http {
+        Server::Http { url, headers, oauth } => Server::Http {
             url: expand(url, lookup)?,
             headers: map(headers)?,
+            oauth: match oauth {
+                Some(oauth) => Some(OAuth {
+                    client_id: expand(&oauth.client_id, lookup)?,
+                    callback_port: oauth.callback_port,
+                }),
+                None => None,
+            },
         },
     })
 }

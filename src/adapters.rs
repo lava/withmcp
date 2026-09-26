@@ -99,8 +99,16 @@ fn claude_config(servers: &BTreeMap<String, Server>) -> serde_json::Value {
                 Server::Stdio { command, args, env } => {
                     json!({ "type": "stdio", "command": command, "args": args, "env": env })
                 }
-                Server::Http { url, headers } => {
-                    json!({ "type": "http", "url": url, "headers": headers })
+                Server::Http { url, headers, oauth } => {
+                    let mut value = json!({ "type": "http", "url": url, "headers": headers });
+                    if let Some(oauth) = oauth {
+                        let mut config = json!({ "clientId": oauth.client_id });
+                        if let Some(port) = oauth.callback_port {
+                            config["callbackPort"] = port.into();
+                        }
+                        value["oauth"] = config;
+                    }
+                    value
                 }
             };
             (name.clone(), value)
@@ -129,10 +137,14 @@ fn codex_args(servers: &BTreeMap<String, Server>) -> Vec<OsString> {
                     push(format!("{name}.env.{key}"), string(value));
                 }
             }
-            Server::Http { url, headers } => {
+            Server::Http { url, headers, oauth } => {
                 push(format!("{name}.url"), string(url));
                 for (key, value) in headers {
                     push(format!("{name}.http_headers.{key}"), string(value));
+                }
+                // Codex has no fixed callback port, so `callback_port` is dropped.
+                if let Some(oauth) = oauth {
+                    push(format!("{name}.oauth.client_id"), string(&oauth.client_id));
                 }
             }
         }
@@ -192,6 +204,9 @@ mod tests {
             [servers.gh]
             url = "https://example.com/mcp"
             headers = { X-Api-Key = "k" }
+            [servers.slack]
+            url = "https://mcp.slack.com/mcp"
+            oauth = { client_id = "cid", callback_port = 3118 }
             [servers.pw]
             command = "npx"
             args = ["@playwright/mcp@latest", "--say \"hi\""]
@@ -228,6 +243,12 @@ mod tests {
                     "args": ["@playwright/mcp@latest", "--say \"hi\""],
                     "env": { "DEBUG": "1" },
                 },
+                "slack": {
+                    "type": "http",
+                    "url": "https://mcp.slack.com/mcp",
+                    "headers": {},
+                    "oauth": { "clientId": "cid", "callbackPort": 3118 },
+                },
             }})
         );
     }
@@ -249,6 +270,10 @@ mod tests {
                 r#"mcp_servers.pw.args=["@playwright/mcp@latest", '--say "hi"']"#,
                 "-c",
                 r#"mcp_servers.pw.env.DEBUG="1""#,
+                "-c",
+                r#"mcp_servers.slack.url="https://mcp.slack.com/mcp""#,
+                "-c",
+                r#"mcp_servers.slack.oauth.client_id="cid""#,
             ]
         );
         assert!(prepared.files.is_empty());
