@@ -32,6 +32,7 @@ macro_rules! outln {
 }
 
 const TEMPLATE: &str = include_str!("../examples/profile.toml");
+const REFERENCE: &str = include_str!("../docs/REFERENCE.md");
 
 fn main() -> ExitCode {
     match run() {
@@ -59,6 +60,7 @@ fn run() -> Result<ExitCode> {
         } => toggle(&opts, enable, &servers, scope)?,
         Command::ClientSecret(server) => client_secret(&opts, &server)?,
         Command::Export(harness) => export(&opts, harness.as_deref())?,
+        Command::Docs => emit(REFERENCE)?,
         Command::Launch(argv) => return launch(plan(&opts, Some(argv))?),
     }
     Ok(ExitCode::SUCCESS)
@@ -659,7 +661,7 @@ fn render_list(plan: &Plan, color: bool) -> String {
 
 fn render_overview(plan: &Plan, color: bool) -> String {
     let mut out = String::from(
-        "Usage:\n  withmcp [options] [--] <harness> [args...]\n\nConfigured Servers:\n",
+        "Usage:\n  withmcp [options] [--] <harness> [args...]\n  withmcp docs  # reference for agents\n\nConfigured Servers:\n",
     );
     let list = render_list(plan, color);
     if list.is_empty() {

@@ -14,6 +14,7 @@ Usage:
   withmcp [options] disable [--scope global|project] <server>...
   withmcp [options] clientsecret <server>
   withmcp [options] export [<harness>]
+  withmcp [options] docs
   withmcp [options] edit
 
 Options:
@@ -45,6 +46,9 @@ It adds a placeholder entry with local scope in
 and path rules to project configs. Configured disabled servers are removed;
 unrelated native servers are kept. Without <harness>, it exports to every
 locally installed harness.
+
+`docs` prints the full reference documentation, including the profile file
+format; useful for feeding to an agent that will use withmcp.
 
 Profiles live in ~/.config/withmcp/profiles/<name>.toml; `edit` opens the
 selected one.
@@ -88,6 +92,7 @@ pub enum Command {
         servers: Vec<String>,
         scope: Scope,
     },
+    Docs,
     Edit,
     Help,
     /// The launch usage and the configured servers, shown without arguments.
@@ -121,6 +126,7 @@ enum Subcommand {
     Disable,
     ClientSecret,
     Export,
+    Docs,
     Edit,
 }
 
@@ -248,14 +254,14 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                 scope: scope.unwrap_or(Scope::Global),
             }
         }
-        Some(sub @ (Subcommand::List | Subcommand::Edit)) => {
+        Some(sub @ (Subcommand::List | Subcommand::Docs | Subcommand::Edit)) => {
             if let Some(extra) = harness.first() {
                 bail!("unexpected argument `{}`", extra.to_string_lossy());
             }
-            if sub == Subcommand::List {
-                Command::List
-            } else {
-                Command::Edit
+            match sub {
+                Subcommand::List => Command::List,
+                Subcommand::Docs => Command::Docs,
+                _ => Command::Edit,
             }
         }
     };
@@ -270,6 +276,7 @@ fn subcommand(s: &str) -> Option<Subcommand> {
         "disable" => Some(Subcommand::Disable),
         "clientsecret" => Some(Subcommand::ClientSecret),
         "export" => Some(Subcommand::Export),
+        "docs" => Some(Subcommand::Docs),
         "edit" => Some(Subcommand::Edit),
         _ => None,
     }
@@ -408,6 +415,16 @@ mod tests {
         assert_eq!(
             run(&["--", "export"]).unwrap().1,
             Command::Launch(argv(&["export"]))
+        );
+    }
+
+    #[test]
+    fn docs() {
+        assert_eq!(run(&["docs"]).unwrap().1, Command::Docs);
+        assert!(run(&["docs", "extra"]).is_err());
+        assert_eq!(
+            run(&["--", "docs"]).unwrap().1,
+            Command::Launch(argv(&["docs"]))
         );
     }
 
