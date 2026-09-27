@@ -116,6 +116,54 @@ rustup target add x86_64-unknown-linux-musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
+## Reference
+
+### Commands
+
+```
+withmcp [options] [--] <harness> [args...]   launch a harness with the resolved servers
+withmcp [options] list                       show servers for the current directory
+withmcp [options] which [[--] <harness>...]  same, plus why, and what a launch would do
+withmcp [options] enable [--scope global|project] <server>...
+withmcp [options] disable [--scope global|project] <server>...
+withmcp [options] clientsecret <server>      store an OAuth client secret for Claude Code
+withmcp [options] edit                       open the selected profile file
+```
+
+Options: `-p/--profile <name>`, `+<server>`/`-<server>` (or `--enable`/`--disable`) to
+toggle a server for this run, `--config <file>` to use a profile file directly.
+A server name may point to a group, or to `<profile>/<server>` to pull one in from
+another profile.
+
+### How the server set is built
+
+For each configured server, in order (later steps win):
+
+1. **Flags and groups** — a server starts on if its own `enabled = true`, or it
+   belongs to a group with `enabled = true`.
+2. **Path rules** — `[paths."..."]` rules matching `cwd`, applied least-specific
+   first; within a rule, group `enable`/`disable` apply before individual servers.
+3. **CLI overrides** — `+server`/`-server` (or `enable`/`disable` names), applied
+   in the order given.
+
+Servers already configured natively for the selected harness are left out of
+the generated config. Server names passed to the harness get the profile's
+`prefix` (default: `<profile>_`).
+
+### Environment variables
+
+- `WITHMCP_PROFILE` — profile to use when `--profile` is not given
+- `WITHMCP_CONFIG_DIR` — config directory instead of `~/.config/withmcp`
+- `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `HOME` — used to locate config/data dirs
+  when the withmcp-specific ones above are not set
+- `VISUAL`, `EDITOR` — editor for `edit` (default: `vi`)
+- `NO_COLOR` — disable colored output
+- `XDG_RUNTIME_DIR` — used to place adapter runtime files (falls back to a
+  per-user temp dir)
+
+Server definitions can also reference environment variables via `${VAR}` and
+`$(command)` expansion in config values.
+
 ## Known limitations
 
 - Codex receives servers as command-line arguments, so expanded `${VAR}` and
