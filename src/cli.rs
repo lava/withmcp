@@ -13,6 +13,7 @@ Usage:
   withmcp [options] enable [--scope global|project] <server>...
   withmcp [options] disable [--scope global|project] <server>...
   withmcp [options] clientsecret <server>
+  withmcp [options] export [<harness>]
   withmcp [options] edit
 
 Options:
@@ -39,6 +40,11 @@ path rule for the current directory.
 settings in Claude Code, which only accepts secrets when a server is added.
 It adds a placeholder entry with local scope in
 ~/.local/share/withmcp/claude-secrets; keep that entry.
+
+`export` writes top-level enabled servers to the harness's user-wide MCP config
+and path rules to project configs. Configured disabled servers are removed;
+unrelated native servers are kept. Without <harness>, it exports to every
+locally installed harness.
 
 Profiles live in ~/.config/withmcp/profiles/<name>.toml; `edit` opens the
 selected one.
@@ -75,6 +81,7 @@ pub enum Command {
     Which(Option<Vec<OsString>>),
     List,
     ClientSecret(String),
+    Export(Option<String>),
     /// `enable` (true) or `disable` (false).
     Toggle {
         enable: bool,
@@ -113,6 +120,7 @@ enum Subcommand {
     Enable,
     Disable,
     ClientSecret,
+    Export,
     Edit,
 }
 
@@ -129,7 +137,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
         saw_any = true;
         let takes_names = matches!(
             sub,
-            Some(Subcommand::Enable | Subcommand::Disable | Subcommand::ClientSecret)
+            Some(
+                Subcommand::Enable
+                    | Subcommand::Disable
+                    | Subcommand::ClientSecret
+                    | Subcommand::Export
+            )
         );
         if arg == "--" {
             if takes_names {
@@ -216,6 +229,12 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<(Options, Comma
                 .map_err(|_| anyhow::anyhow!("`clientsecret` takes exactly one server name"))?;
             Command::ClientSecret(name)
         }
+        Some(Subcommand::Export) => {
+            if names.len() > 1 {
+                bail!("`export` takes at most one harness name");
+            }
+            Command::Export(names.into_iter().next())
+        }
         Some(sub @ (Subcommand::Enable | Subcommand::Disable)) => {
             if names.is_empty() {
                 bail!("missing server name (see `withmcp --help`)");
@@ -250,6 +269,7 @@ fn subcommand(s: &str) -> Option<Subcommand> {
         "enable" => Some(Subcommand::Enable),
         "disable" => Some(Subcommand::Disable),
         "clientsecret" => Some(Subcommand::ClientSecret),
+        "export" => Some(Subcommand::Export),
         "edit" => Some(Subcommand::Edit),
         _ => None,
     }
@@ -376,6 +396,19 @@ mod tests {
         assert_eq!(cmd, Command::ClientSecret("slack".into()));
         assert!(run(&["clientsecret"]).is_err());
         assert!(run(&["clientsecret", "a", "b"]).is_err());
+    }
+
+    #[test]
+    fn export_harness() {
+        let (opts, cmd) = run(&["-p", "work", "export", "codex"]).unwrap();
+        assert_eq!(opts.profile.as_deref(), Some("work"));
+        assert_eq!(cmd, Command::Export(Some("codex".into())));
+        assert_eq!(run(&["export"]).unwrap().1, Command::Export(None));
+        assert!(run(&["export", "claude", "pi"]).is_err());
+        assert_eq!(
+            run(&["--", "export"]).unwrap().1,
+            Command::Launch(argv(&["export"]))
+        );
     }
 
     #[test]

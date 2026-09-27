@@ -28,6 +28,8 @@ pub struct Prepared {
 }
 
 impl Harness {
+    pub const ALL: [Harness; 3] = [Harness::Claude, Harness::Codex, Harness::Pi];
+
     pub fn detect(program: &OsStr) -> Result<Self> {
         let name = Path::new(program).file_stem().and_then(OsStr::to_str);
         match name {
@@ -47,6 +49,11 @@ impl Harness {
             Harness::Codex => "codex",
             Harness::Pi => "pi",
         }
+    }
+
+    /// Whether this harness's program is on `$PATH`.
+    pub fn installed(self) -> bool {
+        on_path(self.name())
     }
 
     pub fn scan(self, loc: &Locations) -> Scan {
@@ -122,31 +129,32 @@ impl Prepared {
 fn claude_config(servers: &BTreeMap<String, Server>) -> serde_json::Value {
     let servers: serde_json::Map<_, _> = servers
         .iter()
-        .map(|(name, server)| {
-            let value = match server {
-                Server::Stdio { command, args, env } => {
-                    json!({ "type": "stdio", "command": command, "args": args, "env": env })
-                }
-                Server::Http {
-                    url,
-                    headers,
-                    oauth,
-                } => {
-                    let mut value = json!({ "type": "http", "url": url, "headers": headers });
-                    if let Some(oauth) = oauth {
-                        let mut config = json!({ "clientId": oauth.client_id });
-                        if let Some(port) = oauth.callback_port {
-                            config["callbackPort"] = port.into();
-                        }
-                        value["oauth"] = config;
-                    }
-                    value
-                }
-            };
-            (name.clone(), value)
-        })
+        .map(|(name, server)| (name.clone(), claude_server_value(server)))
         .collect();
     json!({ "mcpServers": servers })
+}
+
+pub(crate) fn claude_server_value(server: &Server) -> serde_json::Value {
+    match server {
+        Server::Stdio { command, args, env } => {
+            json!({ "type": "stdio", "command": command, "args": args, "env": env })
+        }
+        Server::Http {
+            url,
+            headers,
+            oauth,
+        } => {
+            let mut value = json!({ "type": "http", "url": url, "headers": headers });
+            if let Some(oauth) = oauth {
+                let mut config = json!({ "clientId": oauth.client_id });
+                if let Some(port) = oauth.callback_port {
+                    config["callbackPort"] = port.into();
+                }
+                value["oauth"] = config;
+            }
+            value
+        }
+    }
 }
 
 /// pi-mcp-adapter's `--mcp-config` replaces the Pi agent dir's `mcp.json`
@@ -182,30 +190,34 @@ fn pi_config(servers: &BTreeMap<String, Server>, loc: &Locations) -> Result<serd
         );
     };
     for (name, server) in servers {
-        let value = match server {
-            Server::Stdio { command, args, env } => {
-                json!({ "command": command, "args": args, "env": env })
-            }
-            Server::Http {
-                url,
-                headers,
-                oauth,
-            } => {
-                let mut value = json!({ "url": url, "headers": headers });
-                if let Some(oauth) = oauth {
-                    let mut config = json!({ "clientId": oauth.client_id });
-                    if let Some(port) = oauth.callback_port {
-                        config["redirectUri"] = format!("http://localhost:{port}/callback").into();
-                    }
-                    value["auth"] = "oauth".into();
-                    value["oauth"] = config;
-                }
-                value
-            }
-        };
+        let value = pi_server_value(server);
         existing.insert(name.clone(), value);
     }
     Ok(config)
+}
+
+pub(crate) fn pi_server_value(server: &Server) -> serde_json::Value {
+    match server {
+        Server::Stdio { command, args, env } => {
+            json!({ "command": command, "args": args, "env": env })
+        }
+        Server::Http {
+            url,
+            headers,
+            oauth,
+        } => {
+            let mut value = json!({ "url": url, "headers": headers });
+            if let Some(oauth) = oauth {
+                let mut config = json!({ "clientId": oauth.client_id });
+                if let Some(port) = oauth.callback_port {
+                    config["redirectUri"] = format!("http://localhost:{port}/callback").into();
+                }
+                value["auth"] = "oauth".into();
+                value["oauth"] = config;
+            }
+            value
+        }
+    }
 }
 
 /// Server names and env/header keys are validated as TOML bare keys, so they
@@ -248,6 +260,29 @@ fn codex_args(servers: &BTreeMap<String, Server>) -> Vec<OsString> {
         }
     }
     args
+}
+
+/// Whether `program` is a directly executable file in some `$PATH` entry.
+fn on_path(program: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    search_path(std::env::split_paths(&path), program)
+}
+
+fn search_path(dirs: impl Iterator<Item = PathBuf>, program: &str) -> bool {
+    dirs.map(|dir| dir.join(program)).any(|p| is_executable_file(&p))
+}
+
+#[cfg(unix)]
+fn is_executable_file(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable_file(path: &Path) -> bool {
+    path.is_file()
 }
 
 /// `$XDG_RUNTIME_DIR/withmcp`, else a per-user directory in the temp dir.
@@ -329,6 +364,27 @@ mod tests {
             codex_home: None,
             pi_agent_dir: None,
         }
+    }
+
+    #[test]
+    fn search_path_finds_executables_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("codex"), "").unwrap();
+        std::fs::write(tmp.path().join("pi"), "").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                tmp.path().join("codex"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .unwrap();
+        }
+        let dirs = || [tmp.path().to_path_buf()].into_iter();
+        assert!(search_path(dirs(), "codex"));
+        #[cfg(unix)]
+        assert!(!search_path(dirs(), "pi")); // not executable
+        assert!(!search_path(dirs(), "claude")); // not present
     }
 
     #[test]

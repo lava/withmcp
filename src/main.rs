@@ -2,6 +2,7 @@ mod adapters;
 mod cli;
 mod config;
 mod expand;
+mod export;
 mod native;
 mod resolve;
 mod update;
@@ -57,6 +58,7 @@ fn run() -> Result<ExitCode> {
             scope,
         } => toggle(&opts, enable, &servers, scope)?,
         Command::ClientSecret(server) => client_secret(&opts, &server)?,
+        Command::Export(harness) => export(&opts, harness.as_deref())?,
         Command::Launch(argv) => return launch(plan(&opts, Some(argv))?),
     }
     Ok(ExitCode::SUCCESS)
@@ -112,6 +114,7 @@ struct Plan {
     home: Option<PathBuf>,
     cwd: PathBuf,
     resolution: Resolution,
+    overrides: Vec<Override>,
     borrowed: Vec<Borrowed>,
     target: Option<Target>,
 }
@@ -216,6 +219,7 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
         home,
         cwd,
         resolution,
+        overrides,
         borrowed,
         target,
     })
@@ -411,6 +415,143 @@ fn toggle(opts: &Options, enable: bool, names: &[String], scope: Scope) -> Resul
         }
     }
     Ok(())
+}
+
+fn export(opts: &Options, harness_name: Option<&str>) -> Result<()> {
+    let harnesses: Vec<Harness> = match harness_name {
+        Some(name) => vec![Harness::detect(std::ffi::OsStr::new(name))?],
+        None => {
+            let found: Vec<_> = Harness::ALL.into_iter().filter(|h| h.installed()).collect();
+            if found.is_empty() {
+                bail!("no locally installed harness found (checked: claude, codex, pi)");
+            }
+            found
+        }
+    };
+    let plan = plan(opts, None)?;
+    let home = plan.home.clone().context("$HOME is not set")?;
+    let locations = Locations::from_env(home, plan.cwd.clone());
+    let sources = expand::Sources::system();
+    let mut base_profile = plan.profile.clone();
+    base_profile.paths.clear();
+    let base = resolve::resolve(
+        &plan.selection.name,
+        &base_profile,
+        &plan.cwd,
+        plan.home.as_deref(),
+        &plan.overrides,
+    )?;
+    let mut servers = BTreeMap::new();
+    for (name, decision) in &base.decisions {
+        let exposed = base.exposed_name(name);
+        let server = if decision.enabled {
+            Some(
+                expand::expand_server(&plan.profile.servers[name].server, &sources)
+                    .with_context(|| format!("server `{name}`"))?,
+            )
+        } else {
+            None
+        };
+        servers.insert(exposed, server);
+    }
+    for borrowed in &plan.borrowed {
+        let server = expand::expand_server(&borrowed.server, &sources)
+            .with_context(|| format!("server `{}`", borrowed.label))?;
+        servers.insert(borrowed.exposed.clone(), Some(server));
+    }
+    let mut paths: Vec<_> = plan
+        .profile
+        .paths
+        .keys()
+        .map(|raw| Ok((resolve::normalize(raw, plan.home.as_deref())?, raw)))
+        .collect::<Result<_>>()?;
+    paths.sort_by_key(|(path, _)| path.components().count());
+    let mut out = String::new();
+    let mut path_changes = Vec::new();
+    for (dir, raw) in &paths {
+        if !dir.is_dir() {
+            outln!(out, "info: skipped path `{raw}` (directory does not exist)");
+            continue;
+        }
+        let effective = resolve::resolve(
+            &plan.selection.name,
+            &plan.profile,
+            dir,
+            plan.home.as_deref(),
+            &plan.overrides,
+        )?;
+        let parent = paths
+            .iter()
+            .filter(|(ancestor, _)| ancestor != dir && dir.starts_with(ancestor))
+            .max_by_key(|(ancestor, _)| ancestor.components().count());
+        let parent_resolution = match parent {
+            Some((ancestor, _)) => resolve::resolve(
+                &plan.selection.name,
+                &plan.profile,
+                ancestor,
+                plan.home.as_deref(),
+                &plan.overrides,
+            )?,
+            None => resolve::resolve(
+                &plan.selection.name,
+                &base_profile,
+                dir,
+                plan.home.as_deref(),
+                &plan.overrides,
+            )?,
+        };
+        let mut changes = BTreeMap::new();
+        for (name, decision) in &effective.decisions {
+            let change = match (parent_resolution.decisions[name].enabled, decision.enabled) {
+                (false, true) => export::ProjectChange::Enable(
+                    expand::expand_server(&plan.profile.servers[name].server, &sources)
+                        .with_context(|| format!("server `{name}` for path `{raw}`"))?,
+                ),
+                (true, false) => export::ProjectChange::Disable,
+                _ => export::ProjectChange::Remove,
+            };
+            changes.insert(effective.exposed_name(name), change);
+        }
+        path_changes.push((dir, changes));
+    }
+    let announce = harnesses.len() > 1;
+    for harness in harnesses {
+        if announce {
+            outln!(out, "{}:", harness.name());
+        }
+        let report = export::export(harness, &locations, &servers)?;
+        append_export_report(&mut out, &report, plan.home.as_deref());
+        for (dir, changes) in &path_changes {
+            for report in export::export_project(harness, &locations, dir, changes)? {
+                append_export_report(&mut out, &report, plan.home.as_deref());
+            }
+        }
+    }
+    emit(&out)
+}
+
+fn append_export_report(out: &mut String, report: &export::Report, home: Option<&Path>) {
+    for name in &report.added {
+        outln!(out, "added `{name}`");
+    }
+    for name in &report.updated {
+        outln!(out, "updated `{name}`");
+    }
+    for name in &report.removed {
+        outln!(out, "removed `{name}`");
+    }
+    for name in &report.disabled {
+        outln!(out, "disabled `{name}` for this project");
+    }
+    for name in &report.left_alone {
+        outln!(out, "info: left `{name}` alone (not in withmcp config)");
+    }
+    let path = display(&report.path, home);
+    if report.changed {
+        outln!(out, "updated {path}");
+    } else {
+        outln!(out, "{path} is already up to date");
+    }
 }
 
 fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {

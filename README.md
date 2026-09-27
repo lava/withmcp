@@ -126,6 +126,7 @@ withmcp [options] list                       show servers for the current direct
 withmcp [options] which [[--] <harness>...]  same, plus why, and what a launch would do
 withmcp [options] enable [--scope global|project] <server>...
 withmcp [options] disable [--scope global|project] <server>...
+withmcp [options] export [<harness>]         sync into the harness user config
 withmcp [options] edit                       open the selected profile file
 ```
 
@@ -148,6 +149,28 @@ For each configured server, in order (later steps win):
 Servers already configured natively for the selected harness are left out of
 the generated config. Server names passed to the harness get the profile's
 `prefix` (default: `<profile>_`).
+
+### Export to a harness
+
+`withmcp export claude`, `withmcp export codex`, and `withmcp export pi` write
+top-level enabled servers into that harness's user-wide MCP config. `withmcp
+export` without a harness does this for every harness whose program is found
+on `$PATH`. Each
+`[paths."..."]` rule is exported to that directory's project config, with
+nested rules overriding their parent. Disabled servers in the selected profile
+are removed from the user config. Project disables use each harness's native
+project setting. Native servers absent from the selected withmcp profile are
+left in place and reported as info. The usual profile selection and one-run
+`+server`/`-server` options apply. Missing path directories are skipped with
+an info message.
+
+The destination is `~/.claude.json` (or `CLAUDE_CONFIG_DIR/.claude.json`),
+`$CODEX_HOME/config.toml` (default `~/.codex/config.toml`), or Pi's agent
+`mcp.json` (default `~/.pi/agent/mcp.json`). Project entries go to `.mcp.json`
+for Claude, `.codex/config.toml` for Codex, and `.pi/mcp.json` for Pi. Claude's
+project disable list is stored in `~/.claude.json`. Server values are expanded
+before they are saved, so environment variables and command output are stored
+in the destination file.
 
 ### Environment variables
 
