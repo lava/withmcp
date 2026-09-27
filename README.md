@@ -177,7 +177,8 @@ Server definitions can also reference environment variables via `${VAR}` and
   `which <harness>` for that.
 - Claude Code only accepts an OAuth client secret when a server is added, so
   `withmcp clientsecret <server>` stores it up front via `claude mcp add` in a
-  local-scope entry that withmcp's own config then reuses at launch. Only
+  local-scope entry that withmcp's own config then reuses at launch. Other
+  harnesses do not support MCP servers with a client secret at all, so only
   Claude Code is supported by this command today.
 
 ## License
