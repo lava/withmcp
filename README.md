@@ -126,7 +126,6 @@ withmcp [options] list                       show servers for the current direct
 withmcp [options] which [[--] <harness>...]  same, plus why, and what a launch would do
 withmcp [options] enable [--scope global|project] <server>...
 withmcp [options] disable [--scope global|project] <server>...
-withmcp [options] clientsecret <server>      store an OAuth client secret for Claude Code
 withmcp [options] edit                       open the selected profile file
 ```
 
@@ -176,6 +175,10 @@ Server definitions can also reference environment variables via `${VAR}` and
   for collisions.
 - `list` does not check for collisions with a harness's own servers; use
   `which <harness>` for that.
+- Claude Code only accepts an OAuth client secret when a server is added, so
+  `withmcp clientsecret <server>` stores it up front via `claude mcp add` in a
+  local-scope entry that withmcp's own config then reuses at launch. Only
+  Claude Code is supported by this command today.
 
 ## License
 
