@@ -1,16 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 
 /// A profile file, `<config dir>/profiles/<name>.toml`.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Profile {
     /// Prepended to server names before they are passed to the harness;
     /// defaults to `<profile>_`.
     pub prefix: Option<String>,
+    /// Merged into every command server's own `env_passthrough` in this
+    /// profile, so shared variables need not be repeated per server.
+    #[serde(default)]
+    pub env_passthrough: BTreeSet<String>,
     #[serde(default)]
     pub servers: BTreeMap<String, Entry>,
     #[serde(default)]
@@ -27,7 +31,7 @@ pub struct Entry {
     pub server: Server,
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Group {
     pub servers: Vec<String>,
@@ -47,6 +51,10 @@ pub enum Server {
         command: String,
         args: Vec<String>,
         env: BTreeMap<String, String>,
+        /// Variables from the launching shell to pass through unchanged.
+        /// Only Codex sandboxes a server's environment; the other harnesses
+        /// already inherit it in full, so this has no effect there.
+        env_passthrough: BTreeSet<String>,
     },
     Http {
         url: String,
@@ -75,6 +83,8 @@ struct RawServer {
     args: Vec<String>,
     #[serde(default)]
     env: BTreeMap<String, String>,
+    #[serde(default)]
+    env_passthrough: BTreeSet<String>,
     url: Option<String>,
     #[serde(default)]
     headers: BTreeMap<String, String>,
@@ -94,11 +104,16 @@ impl TryFrom<RawServer> for Entry {
                     command,
                     args: raw.args,
                     env: raw.env,
+                    env_passthrough: raw.env_passthrough,
                 }
             }
             (None, Some(url)) => {
-                if !raw.args.is_empty() || !raw.env.is_empty() {
-                    return Err("`args` and `env` are only valid for `command` servers".into());
+                if !raw.args.is_empty() || !raw.env.is_empty() || !raw.env_passthrough.is_empty()
+                {
+                    return Err(
+                        "`args`, `env`, and `env_passthrough` are only valid for `command` servers"
+                            .into(),
+                    );
                 }
                 Server::Http {
                     url,
@@ -118,7 +133,7 @@ impl TryFrom<RawServer> for Entry {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Rule {
     #[serde(default)]
@@ -141,9 +156,27 @@ impl Profile {
     }
 
     pub fn parse(text: &str) -> Result<Self> {
-        let profile: Self = toml::from_str(text)?;
+        let mut profile: Self = toml::from_str(text)?;
         profile.validate()?;
+        profile.apply_passthrough_defaults();
         Ok(profile)
+    }
+
+    /// Merges the top-level `env_passthrough` into every command server's
+    /// own list, so it need not be repeated per server.
+    fn apply_passthrough_defaults(&mut self) {
+        if self.env_passthrough.is_empty() {
+            return;
+        }
+        let defaults = self.env_passthrough.clone();
+        for entry in self.servers.values_mut() {
+            if let Server::Stdio {
+                env_passthrough, ..
+            } = &mut entry.server
+            {
+                env_passthrough.extend(defaults.iter().cloned());
+            }
+        }
     }
 
     pub fn target(&self, name: &str) -> Option<Target<'_>> {
@@ -174,20 +207,39 @@ impl Profile {
         {
             bail!("invalid prefix `{prefix}`: use only letters, digits, `-` and `_`");
         }
+        for name in &self.env_passthrough {
+            if !is_bare_key(name) {
+                bail!(
+                    "invalid env_passthrough entry `{name}`: use only letters, digits, `-` and `_`"
+                );
+            }
+        }
         for (name, entry) in &self.servers {
             // Codex addresses servers as `mcp_servers.<name>` in `-c` overrides.
             if !is_bare_key(name) {
                 bail!("invalid server name `{name}`: use only letters, digits, `-` and `_`");
             }
-            let keys = match &entry.server {
-                Server::Stdio { env, .. } => env.keys(),
-                Server::Http { headers, .. } => headers.keys(),
+            let env_keys: Vec<&String> = match &entry.server {
+                Server::Stdio { env, .. } => env.keys().collect(),
+                Server::Http { headers, .. } => headers.keys().collect(),
             };
-            for key in keys {
+            for key in env_keys {
                 if !is_bare_key(key) {
                     bail!(
                         "server `{name}`: invalid key `{key}`: use only letters, digits, `-` and `_`"
                     );
+                }
+            }
+            if let Server::Stdio {
+                env_passthrough, ..
+            } = &entry.server
+            {
+                for var in env_passthrough {
+                    if !is_bare_key(var) {
+                        bail!(
+                            "server `{name}`: invalid env_passthrough entry `{var}`: use only letters, digits, `-` and `_`"
+                        );
+                    }
                 }
             }
         }
@@ -333,10 +385,59 @@ mod tests {
     }
 
     #[test]
+    fn env_passthrough_defaults_merge_into_servers() {
+        let profile = Profile::parse(
+            r#"
+            env_passthrough = ["HERDR_ENV", "HERDR_PANE_ID"]
+            [servers.a]
+            command = "npx"
+            env_passthrough = ["HERDR_ENV", "OWN_VAR"]
+            [servers.b]
+            command = "npx"
+            [servers.c]
+            url = "https://example.com/mcp"
+            "#,
+        )
+        .unwrap();
+        let Server::Stdio {
+            env_passthrough, ..
+        } = &profile.servers["a"].server
+        else {
+            panic!("not a stdio server");
+        };
+        assert_eq!(
+            env_passthrough,
+            &BTreeSet::from(["HERDR_ENV".to_string(), "HERDR_PANE_ID".to_string(), "OWN_VAR".to_string()])
+        );
+        let Server::Stdio {
+            env_passthrough, ..
+        } = &profile.servers["b"].server
+        else {
+            panic!("not a stdio server");
+        };
+        assert_eq!(
+            env_passthrough,
+            &BTreeSet::from(["HERDR_ENV".to_string(), "HERDR_PANE_ID".to_string()])
+        );
+        assert!(matches!(profile.servers["c"].server, Server::Http { .. }));
+    }
+
+    #[test]
     fn rejects_invalid_servers() {
         assert!(error("[servers.a]\ncommand = \"x\"\nurl = \"y\"").contains("not both"));
         assert!(error("[servers.a]\nargs = []").contains("either `command` or `url`"));
         assert!(error("[servers.a]\nurl = \"y\"\nenv = { K = \"v\" }").contains("only valid"));
+        assert!(
+            error("[servers.a]\nurl = \"y\"\nenv_passthrough = [\"X\"]").contains("only valid")
+        );
+        assert!(
+            error("env_passthrough = [\"bad key\"]\n[servers.a]\ncommand = \"x\"")
+                .contains("invalid env_passthrough entry")
+        );
+        assert!(
+            error("[servers.a]\ncommand = \"x\"\nenv_passthrough = [\"bad key\"]")
+                .contains("invalid env_passthrough entry")
+        );
         assert!(
             error("[servers.a]\ncommand = \"x\"\noauth = { client_id = \"i\" }")
                 .contains("only valid")

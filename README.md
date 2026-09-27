@@ -172,6 +172,12 @@ project disable list is stored in `~/.claude.json`. Server values are expanded
 before they are saved, so environment variables and command output are stored
 in the destination file.
 
+Codex sandboxes the environment it gives MCP servers; a command server's
+`env_passthrough` (settable per server, or at the profile's top level to
+cover every command server at once) lists variables from the launching shell
+to let through unchanged, exported as Codex's `env_vars`. Claude and Pi
+already inherit the full environment, so the option has no effect there.
+
 ### Environment variables
 
 - `WITHMCP_PROFILE` — profile to use when `--profile` is not given

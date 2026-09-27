@@ -136,7 +136,9 @@ fn claude_config(servers: &BTreeMap<String, Server>) -> serde_json::Value {
 
 pub(crate) fn claude_server_value(server: &Server) -> serde_json::Value {
     match server {
-        Server::Stdio { command, args, env } => {
+        Server::Stdio {
+            command, args, env, ..
+        } => {
             json!({ "type": "stdio", "command": command, "args": args, "env": env })
         }
         Server::Http {
@@ -198,7 +200,9 @@ fn pi_config(servers: &BTreeMap<String, Server>, loc: &Locations) -> Result<serd
 
 pub(crate) fn pi_server_value(server: &Server) -> serde_json::Value {
     match server {
-        Server::Stdio { command, args, env } => {
+        Server::Stdio {
+            command, args, env, ..
+        } => {
             json!({ "command": command, "args": args, "env": env })
         }
         Server::Http {
@@ -231,7 +235,12 @@ fn codex_args(servers: &BTreeMap<String, Server>) -> Vec<OsString> {
     let string = |s: &String| toml::Value::String(s.clone());
     for (name, server) in servers {
         match server {
-            Server::Stdio { command, args, env } => {
+            Server::Stdio {
+                command,
+                args,
+                env,
+                env_passthrough,
+            } => {
                 push(format!("{name}.command"), string(command));
                 if !args.is_empty() {
                     push(
@@ -241,6 +250,12 @@ fn codex_args(servers: &BTreeMap<String, Server>) -> Vec<OsString> {
                 }
                 for (key, value) in env {
                     push(format!("{name}.env.{key}"), string(value));
+                }
+                if !env_passthrough.is_empty() {
+                    push(
+                        format!("{name}.env_vars"),
+                        toml::Value::Array(env_passthrough.iter().map(string).collect()),
+                    );
                 }
             }
             Server::Http {
@@ -347,6 +362,7 @@ mod tests {
             command = "npx"
             args = ["@playwright/mcp@latest", "--say \"hi\""]
             env = { DEBUG = "1" }
+            env_passthrough = ["DISPLAY"]
             "#,
         )
         .unwrap()
@@ -459,6 +475,8 @@ mod tests {
                 r#"mcp_servers.pw.args=["@playwright/mcp@latest", '--say "hi"']"#,
                 "-c",
                 r#"mcp_servers.pw.env.DEBUG="1""#,
+                "-c",
+                r#"mcp_servers.pw.env_vars=["DISPLAY"]"#,
                 "-c",
                 r#"mcp_servers.slack.url="https://mcp.slack.com/mcp""#,
                 "-c",

@@ -1,5 +1,12 @@
 ## withmcp profile. Uncomment and adapt the entries below.
 
+## Applies to every command server in this profile, so shared variables
+## (e.g. from a terminal multiplexer) need not be repeated on each one; a
+## server's own env_passthrough adds to this. This must stay above the
+## first `[...]` section below, since TOML keys after a table header belong
+## to that table.
+# env_passthrough = ["MY_TOOL_TOKEN"]
+
 ## Servers are off unless they, or a group containing them, have
 ## `enabled = true`.
 # [servers.linear]
@@ -20,6 +27,10 @@
 # [servers.chrome]
 # command = "npx"
 # args = ["-y", "chrome-devtools-mcp@latest"]
+## Codex sandboxes the environment it gives MCP servers; this lets DISPLAY
+## through unchanged (Claude and Pi already inherit the full environment,
+## so this has no effect there).
+# env_passthrough = ["DISPLAY"]
 
 ## Groups switch related servers together.
 ## Like servers, they are not enabled by default.

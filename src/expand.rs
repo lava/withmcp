@@ -103,13 +103,19 @@ pub fn expand_server(server: &Server, sources: &Sources) -> Result<Server> {
             .collect::<Result<_>>()
     };
     Ok(match server {
-        Server::Stdio { command, args, env } => Server::Stdio {
+        Server::Stdio {
+            command,
+            args,
+            env,
+            env_passthrough,
+        } => Server::Stdio {
             command: expand(command, sources)?,
             args: args
                 .iter()
                 .map(|a| expand(a, sources))
                 .collect::<Result<_>>()?,
             env: map(env)?,
+            env_passthrough: env_passthrough.clone(),
         },
         Server::Http {
             url,
