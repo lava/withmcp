@@ -24,14 +24,14 @@ Configured Servers:
 
 Why would you want to do that? These were my motivating examples:
 
-* Found a cool server that has very specific use cases so you don't want it
+* Found a cool server that has very narrow use case so you don't want it
   in the context by default? -> Save it in your config, enable when needed.
 
 * Want to switch between different toolsets for different tasks? -> Save them
   in your config, enable toolsets when needed.
 
-* Want to enable an MCP server globally like voice mode when working
-  remotely? -> Save it in your config, enable when needed.
+* Want to enable an extra set of tools for a specific environment, say when
+  running agents inside herdr? -> Create a profile for it, enable via env var.
 
 ## Quick start
 
