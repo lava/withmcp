@@ -98,7 +98,8 @@ For each configured server, in order (later steps win):
    in the order given.
 
 Servers already configured natively for the selected harness are left out of
-the generated config. Server names passed to the harness get the profile's
+the generated config. If the native definition differs from the withmcp one,
+a warning suggests re-running `withmcp export` to update it. Server names passed to the harness get the profile's
 `prefix` (default: `<profile>_`).
 
 ## Export to a harness

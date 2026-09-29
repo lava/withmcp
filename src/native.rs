@@ -45,17 +45,26 @@ impl Locations {
 pub struct Scan {
     /// Files that were read.
     pub checked: Vec<PathBuf>,
-    /// Server name to the first file defining it.
-    pub servers: BTreeMap<String, PathBuf>,
+    /// Server name to its first definition.
+    pub servers: BTreeMap<String, Defined>,
     pub warnings: Vec<String>,
 }
 
+/// A server definition found in a harness config file. TOML definitions are
+/// converted to JSON.
+#[derive(Debug)]
+pub struct Defined {
+    pub path: PathBuf,
+    pub value: Value,
+}
+
 impl Scan {
-    fn add<'a>(&mut self, path: &Path, names: impl IntoIterator<Item = &'a String>) {
-        for name in names {
-            self.servers
-                .entry(name.clone())
-                .or_insert_with(|| path.to_path_buf());
+    fn add(&mut self, path: &Path, servers: &Value) {
+        for (name, value) in servers.as_object().into_iter().flatten() {
+            self.servers.entry(name.clone()).or_insert_with(|| Defined {
+                path: path.to_path_buf(),
+                value: value.clone(),
+            });
         }
     }
 
@@ -104,11 +113,11 @@ pub fn scan_claude(loc: &Locations) -> Scan {
         None => loc.home.join(".claude.json"),
     };
     if let Some(json) = scan.read_json(&user) {
-        scan.add(&user, keys(&json["mcpServers"]));
+        scan.add(&user, &json["mcpServers"]);
         if let Some(projects) = json["projects"].as_object() {
             for dir in loc.cwd.ancestors() {
                 if let Some(project) = dir.to_str().and_then(|d| projects.get(d)) {
-                    scan.add(&user, keys(&project["mcpServers"]));
+                    scan.add(&user, &project["mcpServers"]);
                 }
             }
         }
@@ -116,7 +125,7 @@ pub fn scan_claude(loc: &Locations) -> Scan {
     if let Some(path) = nearest(&loc.cwd, ".mcp.json")
         && let Some(json) = scan.read_json(&path)
     {
-        scan.add(&path, keys(&json["mcpServers"]));
+        scan.add(&path, &json["mcpServers"]);
     }
     scan
 }
@@ -132,9 +141,10 @@ pub fn scan_codex(loc: &Locations) -> Scan {
     let project = nearest(&loc.cwd, ".codex/config.toml").filter(|p| *p != user);
     for path in std::iter::once(user).chain(project) {
         if let Some(table) = scan.read_toml(&path)
-            && let Some(servers) = table.get("mcp_servers").and_then(|s| s.as_table())
+            && let Some(servers) = table.get("mcp_servers")
+            && let Ok(servers) = serde_json::to_value(servers)
         {
-            scan.add(&path, servers.keys());
+            scan.add(&path, &servers);
         }
     }
     scan
@@ -158,7 +168,7 @@ pub fn scan_pi(loc: &Locations) -> Scan {
             continue;
         }
         if let Some(json) = scan.read_json(&path) {
-            scan.add(&path, keys(pi_servers(&json)));
+            scan.add(&path, pi_servers(&json));
         }
     }
     scan
@@ -192,10 +202,6 @@ pub fn pi_has_mcp_adapter(loc: &Locations) -> bool {
         });
         listed || dir.join("extensions").join(NAME).exists()
     })
-}
-
-fn keys(value: &Value) -> impl Iterator<Item = &String> {
-    value.as_object().into_iter().flat_map(|o| o.keys())
 }
 
 fn nearest(cwd: &Path, relative: &str) -> Option<PathBuf> {
@@ -245,7 +251,7 @@ mod tests {
         };
         let scan = scan_claude(&loc);
         assert_eq!(names(&scan), ["local", "shared", "user"]);
-        assert_eq!(scan.servers["shared"], project.join(".mcp.json"));
+        assert_eq!(scan.servers["shared"].path, project.join(".mcp.json"));
         assert!(scan.warnings.is_empty());
     }
 

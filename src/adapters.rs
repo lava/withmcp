@@ -9,6 +9,7 @@ use anyhow::{Context, Result, bail};
 use serde_json::json;
 
 use crate::config::Server;
+use crate::export;
 use crate::native::{self, Locations, Scan};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,6 +62,24 @@ impl Harness {
             Harness::Claude => native::scan_claude(loc),
             Harness::Codex => native::scan_codex(loc),
             Harness::Pi => native::scan_pi(loc),
+        }
+    }
+
+    /// Whether a server definition found by `scan` is what `withmcp export`
+    /// writes for `server`, ignoring the `enabled = true` of Codex projects.
+    pub fn defines(self, defined: &serde_json::Value, server: &Server) -> bool {
+        match self {
+            Harness::Claude => *defined == claude_server_value(server),
+            Harness::Pi => *defined == pi_server_value(server),
+            Harness::Codex => {
+                let mut defined = defined.clone();
+                if let Some(fields) = defined.as_object_mut()
+                    && fields.get("enabled") == Some(&json!(true))
+                {
+                    fields.remove("enabled");
+                }
+                serde_json::to_value(export::codex_fields(server)).is_ok_and(|v| v == defined)
+            }
         }
     }
 
@@ -286,7 +305,8 @@ fn on_path(program: &str) -> bool {
 }
 
 fn search_path(dirs: impl Iterator<Item = PathBuf>, program: &str) -> bool {
-    dirs.map(|dir| dir.join(program)).any(|p| is_executable_file(&p))
+    dirs.map(|dir| dir.join(program))
+        .any(|p| is_executable_file(&p))
 }
 
 #[cfg(unix)]

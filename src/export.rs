@@ -367,6 +367,19 @@ fn export_claude_disables(
 }
 
 fn codex_item(name: &str, server: &Server) -> Result<toml_edit::Item> {
+    let mut root = toml::Table::new();
+    root.insert(
+        "mcp_servers".into(),
+        toml::Value::Table(toml::Table::from_iter([(
+            name.into(),
+            toml::Value::Table(codex_fields(server)),
+        )])),
+    );
+    let generated: toml_edit::DocumentMut = toml::to_string(&root)?.parse()?;
+    Ok(generated["mcp_servers"][name].clone())
+}
+
+pub(crate) fn codex_fields(server: &Server) -> toml::Table {
     let mut fields = toml::Table::new();
     match server {
         Server::Stdio {
@@ -427,16 +440,7 @@ fn codex_item(name: &str, server: &Server) -> Result<toml_edit::Item> {
             }
         }
     }
-    let mut root = toml::Table::new();
-    root.insert(
-        "mcp_servers".into(),
-        toml::Value::Table(toml::Table::from_iter([(
-            name.into(),
-            toml::Value::Table(fields),
-        )])),
-    );
-    let generated: toml_edit::DocumentMut = toml::to_string(&root)?.parse()?;
-    Ok(generated["mcp_servers"][name].clone())
+    fields
 }
 
 fn write_atomically(path: &Path, text: &str) -> Result<()> {
@@ -686,6 +690,35 @@ mod tests {
                     .iter()
                     .all(|r| !r.changed)
             );
+        }
+    }
+
+    #[test]
+    fn scanned_exports_match_their_servers() {
+        for harness in [Harness::Claude, Harness::Codex, Harness::Pi] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut loc = locations(tmp.path());
+            let server = servers()["work_on"].clone().unwrap();
+            export(harness, &loc, &servers()).unwrap();
+            let scan = harness.scan(&loc);
+            let defined = &scan.servers["work_on"].value;
+            assert!(harness.defines(defined, &server));
+            let mut changed = server.clone();
+            if let Server::Stdio { command, .. } = &mut changed {
+                *command = "other".into();
+            }
+            assert!(!harness.defines(defined, &changed));
+
+            let dir = tmp.path().join("project");
+            std::fs::create_dir_all(&dir).unwrap();
+            let changes = BTreeMap::from([(
+                "project_on".to_string(),
+                ProjectChange::Enable(server.clone()),
+            )]);
+            export_project(harness, &loc, &dir, &changes).unwrap();
+            loc.cwd = dir;
+            let scan = harness.scan(&loc);
+            assert!(harness.defines(&scan.servers["project_on"].value, &server));
         }
     }
 

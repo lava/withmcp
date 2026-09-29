@@ -82,6 +82,18 @@ enum Origin {
 }
 
 impl Selection {
+    /// The `withmcp export` invocation that writes this profile.
+    fn export_command(&self, harness: Harness) -> String {
+        let selection = match self.origin {
+            Origin::Flag => format!(" -p {}", shell_quote(&self.name)),
+            Origin::ConfigFlag => {
+                format!(" --config {}", shell_quote(&self.path.to_string_lossy()))
+            }
+            Origin::Default | Origin::Env => String::new(),
+        };
+        format!("withmcp{selection} export {}", harness.name())
+    }
+
     fn new(opts: &Options) -> Result<Self> {
         if let Some(path) = &opts.config {
             if opts.profile.is_some() {
@@ -129,14 +141,21 @@ struct Borrowed {
     server: Server,
 }
 
+struct Collision {
+    exposed: String,
+    /// Before `${VAR}` and `$(command)` expansion.
+    server: Server,
+    path: PathBuf,
+    defined: serde_json::Value,
+}
+
 struct Target {
     harness: Harness,
     argv: Vec<OsString>,
     locations: Locations,
     scan: Scan,
-    /// Enabled servers the harness already defines, by exposed name, with
-    /// the defining file.
-    collisions: Vec<(String, PathBuf)>,
+    /// Enabled servers the harness already defines.
+    collisions: Vec<Collision>,
     /// Enabled servers to add by exposed name, before `${VAR}` and `$(command)` expansion.
     servers: BTreeMap<String, Server>,
 }
@@ -198,7 +217,12 @@ fn plan(opts: &Options, argv: Option<Vec<OsString>>) -> Result<Plan> {
             let enabled = enabled.chain(borrowed.iter().map(|b| (b.exposed.clone(), &b.server)));
             for (exposed, server) in enabled {
                 match scan.servers.get(&exposed) {
-                    Some(path) => collisions.push((exposed, path.clone())),
+                    Some(defined) => collisions.push(Collision {
+                        exposed,
+                        server: server.clone(),
+                        path: defined.path.clone(),
+                        defined: defined.value.clone(),
+                    }),
                     None => {
                         servers.insert(exposed, server.clone());
                     }
@@ -573,17 +597,23 @@ fn launch(plan: Plan) -> Result<ExitCode> {
     for warning in &target.scan.warnings {
         diagnose(Level::Warning, warning);
     }
-    for (name, path) in &target.collisions {
-        diagnose(
-            Level::Warning,
-            &format!(
-                "not adding `{name}`: {} already defines it in {}",
-                target.harness.name(),
-                display(path, plan.home.as_deref())
-            ),
-        );
-    }
     let sources = expand::Sources::system();
+    // An identical definition is most likely from `withmcp export`.
+    for collision in &target.collisions {
+        let identical = expand::expand_server(&collision.server, &sources)
+            .is_ok_and(|server| target.harness.defines(&collision.defined, &server));
+        if !identical {
+            diagnose(
+                Level::Warning,
+                &format!(
+                    "using `{}` with a different definition in {}; re-export with `{}` to override",
+                    collision.exposed,
+                    display(&collision.path, plan.home.as_deref()),
+                    plan.selection.export_command(target.harness),
+                ),
+            );
+        }
+    }
     let servers = target
         .servers
         .iter()
@@ -791,12 +821,20 @@ fn render_plan(plan: &Plan) -> String {
     for warning in &target.scan.warnings {
         outln!(out, "  warning: {warning}");
     }
-    for (name, path) in &target.collisions {
-        outln!(
-            out,
-            "  skipping `{name}`: already defined in {}",
-            display(path, home)
-        );
+    for collision in &target.collisions {
+        let name = &collision.exposed;
+        let path = display(&collision.path, home);
+        if target
+            .harness
+            .defines(&collision.defined, &collision.server)
+        {
+            outln!(
+                out,
+                "  skipping `{name}`: already defined identically in {path}"
+            );
+        } else {
+            outln!(out, "  skipping `{name}`: already defined in {path}");
+        }
     }
     // Built from unexpanded servers so secrets are not printed and no commands run.
     outln!(out);
